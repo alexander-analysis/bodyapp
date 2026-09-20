@@ -1,0 +1,29 @@
+# secrets and data — never commit
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.db.gz
+backups/
+photos/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# node / frontend
+node_modules/
+frontend/dist/
+frontend/dev-dist/
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

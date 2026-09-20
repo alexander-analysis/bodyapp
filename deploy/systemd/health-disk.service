@@ -1,0 +1,9 @@
+[Unit]
+Description=Health platform: weekly disk space check
+
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=/opt/health
+ExecStart=/opt/health/disk-check.sh

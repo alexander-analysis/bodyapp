@@ -1,0 +1,72 @@
+# Runtime copy lives at /opt/health/docker-compose.yml (bootstrap.sh copies it).
+# rollback.sh edits the api image tag in place; everything else comes from .env.
+name: health
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  api:
+    image: ${GHCR_IMAGE}:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      DB_PATH: /data/health.db
+      PHOTO_DIR: /data/photos
+      BACKUP_DIR: /data/backups
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ${HEALTH_DATA_DIR:-/mnt/storage/health}:/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${BIND_IP:-0.0.0.0}:443:443"
+      - "${BIND_IP:-0.0.0.0}:80:80"
+    environment:
+      TS_HOSTNAME: ${TS_HOSTNAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # Caddy asks the local tailscaled for the .ts.net certificate over this socket.
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
+    mem_limit: 64m
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *logging
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Registry credentials, only needed if the GHCR package is private.
+      - ${DOCKER_CONFIG_DIR:-/root/.docker}/config.json:/config.json:ro
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 300
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+    mem_limit: 64m
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:

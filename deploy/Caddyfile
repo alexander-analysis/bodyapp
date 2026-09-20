@@ -1,0 +1,20 @@
+# TS_HOSTNAME comes from /opt/health/.env via the compose environment, e.g. health.tailnet-name.ts.net
+# Caddy obtains the certificate from tailscaled automatically for *.ts.net names.
+{$TS_HOSTNAME} {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	# The api container serves the built PWA with an index.html fallback.
+	handle {
+		reverse_proxy api:8000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+}

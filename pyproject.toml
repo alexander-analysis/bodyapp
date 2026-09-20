@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:app.*"]

@@ -1,0 +1,10 @@
+[Unit]
+Description=Health platform: pin last-good image when the api is unhealthy
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=/opt/health
+ExecStart=/opt/health/rollback.sh

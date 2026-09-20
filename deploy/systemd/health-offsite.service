@@ -1,0 +1,9 @@
+[Unit]
+Description=Health platform: weekly off-Pi sync of backups (needs OFFSITE_REMOTE in .env)
+
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=/opt/health
+ExecStart=/opt/health/offsite-sync.sh

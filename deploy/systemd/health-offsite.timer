@@ -1,0 +1,9 @@
+[Unit]
+Description=Health platform: offsite backup sync weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
