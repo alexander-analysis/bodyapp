@@ -42,7 +42,7 @@ def job_weekly(settings: Settings) -> None:
     conn = db.connect(settings.db_path)
     try:
         with db.transaction(conn):
-            out = services.weekly_job(conn, today=services.today_local(settings.tz))
+            out = services.weekly_job(conn, today=services.today_local(settings.tz), settings=settings)
         log.info("weekly job: review=%s target=%s", out["review"]["assessment"], (out["review"].get("target") or {}).get("kcal"))
     finally:
         conn.close()

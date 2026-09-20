@@ -33,6 +33,11 @@ export function Today() {
       </div>
 
       {t.mode.names.length > 0 && <ModeCard t={t} />}
+      {t.llm && (t.llm.cap_reached || (t.llm.calls_24h >= 3 && t.llm.error_rate_24h >= 0.5)) && (
+        <div className="card border-warn/40 text-sm text-warn">
+          {t.llm.cap_reached ? `Gemini daily cap reached (${t.llm.cap} calls) — photo and text logging are off until tomorrow; barcode, search and manual still work.` : `Gemini has been failing (${Math.round(t.llm.error_rate_24h * 100)}% of calls in 24 h). Manual logging keeps working.`}
+        </div>
+      )}
 
       <section className="card">
         <div className="grid grid-cols-2 gap-4">

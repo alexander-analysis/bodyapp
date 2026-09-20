@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { BarcodeScanner } from "../components/BarcodeScanner";
+import { CameraTab, DescribeMeal } from "./LogAi";
 import { PortionPicker } from "../components/PortionPicker";
 import { Sheet } from "../components/Sheet";
 import { deleteFavorite, logEntry, logFavorite, logFoodById, previewFor, saveFavorite, type EntryBody } from "../lib/actions";
@@ -33,7 +34,7 @@ export function Log() {
           </button>
         ))}
       </div>
-      {tab === "camera" && <ComingSoon what="Photo identification" when="milestone 7" gemini={gemini} onFallback={() => setTab("search")} />}
+      {tab === "camera" && <CameraTab enabled={gemini} onDone={done} onFallback={() => setTab("search")} />}
       {tab === "barcode" && <BarcodeTab active={tab === "barcode"} onDone={done} onManual={(code) => setParams({ tab: "manual", barcode: code }, { replace: true })} />}
       {tab === "favorites" && <FavoritesTab onDone={done} />}
       {tab === "search" && <SearchTab onDone={done} gemini={gemini} />}
@@ -99,15 +100,6 @@ function BarcodeTab({ active, onDone, onManual }: { active: boolean; onDone: () 
           </>
         )}
       </Sheet>
-    </div>
-  );
-}
-
-function ComingSoon({ what, when, gemini, onFallback }: { what: string; when: string; gemini?: boolean; onFallback: () => void }) {
-  return (
-    <div className="card text-sm space-y-3">
-      <p className="text-muted">{what} arrives in {when}.{gemini === false && what.startsWith("Photo") && " It also needs a Gemini key in the Pi's .env."}</p>
-      <button className="btn btn-ghost w-full" onClick={onFallback}>Use search instead</button>
     </div>
   );
 }
@@ -199,9 +191,10 @@ function SearchTab({ onDone, gemini }: { onDone: () => void; gemini: boolean }) 
   return (
     <div className="space-y-3">
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search foods you've logged (e.g. chicken, oats)" autoFocus />
-      {!gemini && q.trim().length >= 2 && results.length === 0 && !searching && (
-        <div className="card text-sm text-muted">Nothing saved under “{q}”. Add it once in <b className="text-ink">Manual</b> (per 100 g) and it will be here next time. Free-text parsing with Gemini arrives in milestone 7.</div>
+      {q.trim().length >= 2 && results.length === 0 && !searching && (
+        <div className="card text-sm text-muted">Nothing saved under “{q}”. {gemini ? "Describe it below and Gemini will parse it, or add it" : "Add it once"} in <b className="text-ink">Manual</b> (per 100 g) and it will be here next time.</div>
       )}
+      <DescribeMeal enabled={gemini} onDone={onDone} />
       <ul className="space-y-2">
         {results.map((f) => (
           <li key={f.id}>

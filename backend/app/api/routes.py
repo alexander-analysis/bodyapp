@@ -11,10 +11,10 @@ import threading
 import zipfile
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 
-from .. import db, services, store
+from .. import db, gemini, llm_services, services, store
 from ..config import API_PREFIX, Settings
 from .deps import current_target_kcal, get_conn, get_settings_dep, get_today, raise_for
 from .schemas import (
@@ -82,11 +82,12 @@ def reviews(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
 
 
 @router.post("/review/run", status_code=201)
-def run_review(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+def run_review(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today),
+               settings: Settings = Depends(get_settings_dep)) -> dict:
     """Run the weekly job now (the timer does this Sunday night). Idempotent in
     effect: the change-rate rail rejects a second change inside seven days."""
     with db.transaction(conn):
-        return services.weekly_job(conn, today=day)
+        return services.weekly_job(conn, today=day, settings=settings)
 
 
 @router.post("/targets/override", status_code=201)
@@ -331,11 +332,72 @@ def volume_weekly(conn: sqlite3.Connection = Depends(get_conn), day: date = Depe
     return services.weekly_volume(conn, today=day)
 
 
+# --- gemini paths (read-only: they return candidates, never write entries) -------
+
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+
+
+@router.post("/food/photo")
+async def food_photo(file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_conn),
+                     settings: Settings = Depends(get_settings_dep), day: date = Depends(get_today)) -> dict:
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "image too large (12 MB max)")
+    if not raw:
+        raise HTTPException(422, "empty upload")
+    with db.transaction(conn):  # the llm_calls audit row
+        return llm_services.photo_candidates(conn, settings, raw, today=day)
+
+
+@router.post("/food/text")
+def food_text(body: dict, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep),
+              day: date = Depends(get_today)) -> dict:
+    text = str(body.get("text", ""))
+    if len(text) > 1000:
+        raise HTTPException(422, "text too long")
+    with db.transaction(conn):
+        return llm_services.text_candidates(conn, settings, text, today=day)
+
+
+@router.get("/photos/{path:path}")
+def photo_file(path: str, settings: Settings = Depends(get_settings_dep)) -> FileResponse:
+    target = (settings.photo_dir / path).resolve()
+    if settings.photo_dir.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(404, "no such photo")
+    return FileResponse(target, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/ask")
+def ask(body: dict, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep),
+        day: date = Depends(get_today)) -> dict:
+    question = str(body.get("question", "")).strip()
+    if not question or len(question) > 500:
+        raise HTTPException(422, "question must be 1-500 characters")
+    with db.transaction(conn):
+        return llm_services.ask(conn, settings, question, today=day)
+
+
+@router.get("/admin/llm")
+def llm_admin(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today), settings: Settings = Depends(get_settings_dep)) -> dict:
+    return {"enabled": settings.gemini_enabled, "model": settings.gemini_model if settings.gemini_enabled else None,
+            **gemini.stats(conn, today=day), "recent": gemini.recent_calls(conn)}
+
+
 # --- summary -------------------------------------------------------------------
 
 @router.get("/summary/weekly")
 def summary_weekly(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
-    return services.weekly_summary(conn, today=day)
+    out = services.weekly_summary(conn, today=day)
+    out["narrative"] = llm_services.stored_narrative(conn, day)
+    return out
+
+
+@router.post("/summary/narrative")
+def summary_narrative(body: dict | None = None, conn: sqlite3.Connection = Depends(get_conn),
+                      settings: Settings = Depends(get_settings_dep), day: date = Depends(get_today)) -> dict:
+    force = bool((body or {}).get("force"))
+    with db.transaction(conn):
+        return llm_services.generate_narrative(conn, settings, today=day, force=force)
 
 
 # --- export --------------------------------------------------------------------

@@ -378,6 +378,12 @@ def _mode_payload(state: modes.ModeState) -> dict:
     }
 
 
+def _llm_stats(conn: sqlite3.Connection, today: date) -> dict:
+    from . import gemini
+
+    return gemini.stats(conn, today=today)
+
+
 def today_payload(conn: sqlite3.Connection, *, today: date, gemini_enabled: bool, version: str) -> dict:
     user = store.get_user(conn)
     target_row = store.current_target_row(conn, today)
@@ -419,6 +425,7 @@ def today_payload(conn: sqlite3.Connection, *, today: date, gemini_enabled: bool
         "mode": _mode_payload(state),
         "next_session": next_session(conn, today=today, template_name=None) if user else None,
         "gemini_enabled": gemini_enabled,
+        "llm": _llm_stats(conn, today) if gemini_enabled else None,
         "scope": guards.SCOPE_STATEMENT,
         "version": version,
     }
@@ -498,12 +505,17 @@ def run_weekly_review(conn: sqlite3.Connection, *, today: date, triggered_by: st
     return row
 
 
-def weekly_job(conn: sqlite3.Connection, *, today: date) -> dict:
-    """Sunday night, after the rollup: rollup -> trend -> TDEE estimate -> review."""
+def weekly_job(conn: sqlite3.Connection, *, today: date, settings: "Any | None" = None) -> dict:
+    """Sunday night, after the rollup: rollup -> trend -> TDEE estimate -> review -> narrative."""
     nightly_rollup(conn, today=today)
     est = record_tdee_estimate(conn, today=today)
     review = run_weekly_review(conn, today=today, triggered_by="job")
-    return {"tdee_estimate": est, "review": review}
+    narrative = None
+    if settings is not None:
+        from . import llm_services
+
+        narrative = llm_services.generate_narrative(conn, settings, today=today, force=True)
+    return {"tdee_estimate": est, "review": review, "narrative": narrative}
 
 
 # --- barcode (milestone 6) -----------------------------------------------------

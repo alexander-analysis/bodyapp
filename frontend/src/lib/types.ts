@@ -143,6 +143,7 @@ export interface Today {
   mode: ModeInfo;
   next_session: NextSession | null;
   gemini_enabled: boolean;
+  llm: { calls_today: number; ok_today: number; cap: number; cap_reached: boolean; error_rate_24h: number; calls_24h: number } | null;
   scope: string;
   version: string;
 }
@@ -230,7 +231,7 @@ export interface Summary {
   events: { id: number; type: string; severity: string; started_at: string; ended_at: string | null }[];
   target_changes: Target[];
   estimates_flagged: boolean;
-  narrative: string | null;
+  narrative: { text: string; source: "gemini" | "template"; generated_on: string; error?: string } | null;
 }
 
 export interface Health {

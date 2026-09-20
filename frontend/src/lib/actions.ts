@@ -11,6 +11,7 @@ export interface EntryBody {
   macros?: Macros;
   input_method: "barcode" | "photo" | "text" | "favorite" | "manual";
   confidence?: number;
+  photo_path?: string | null;
 }
 
 export function previewFor(body: EntryBody, label: string): OpPreview {
