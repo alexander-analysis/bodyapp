@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -323,7 +323,7 @@ class Gemini:
             raise TransientError(f"network: {exc}") from exc
 
     def _cached(self, purpose: str, cache_key: str) -> dict | None:
-        cutoff = (datetime.utcnow() - timedelta(hours=PHOTO_CACHE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=PHOTO_CACHE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
         row = self.conn.execute(
             "SELECT response_json FROM llm_calls WHERE purpose = ? AND request_hash = ? AND ok = 1 AND called_at >= ? "
             "ORDER BY id DESC LIMIT 1", (purpose, cache_key, cutoff),
@@ -371,20 +371,20 @@ def perceptual_hash(jpeg: bytes) -> str:
     from PIL import Image
 
     img = Image.open(io.BytesIO(jpeg)).convert("L").resize((8, 8))
-    px = list(img.getdata())
+    px = list(img.tobytes())  # 64 grayscale values; works on every Pillow version
     mean = sum(px) / len(px)
     bits = "".join("1" if p > mean else "0" for p in px)
     return f"{int(bits, 2):016x}"
 
 
 def _utc_day_start() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d 00:00:00")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d 00:00:00")
 
 
 def stats(conn: sqlite3.Connection, *, today: date) -> dict:
     start = _utc_day_start()
     day = conn.execute("SELECT COUNT(*), COALESCE(SUM(ok), 0) FROM llm_calls WHERE called_at >= ?", (start,)).fetchone()
-    since = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
     last24 = conn.execute("SELECT COUNT(*), COALESCE(SUM(ok), 0) FROM llm_calls WHERE called_at >= ?", (since,)).fetchone()
     total, ok = int(last24[0]), int(last24[1])
     return {

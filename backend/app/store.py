@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from . import db
@@ -589,7 +589,7 @@ def put_idempotent(conn: sqlite3.Connection, *, key: str, route: str, status_cod
 
 
 def prune_idempotent(conn: sqlite3.Connection, *, older_than_hours: int = 24) -> int:
-    cutoff = (datetime.utcnow() - timedelta(hours=older_than_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).strftime("%Y-%m-%d %H:%M:%S")
     return conn.execute("DELETE FROM idempotency_keys WHERE created_at < ?", (cutoff,)).rowcount
 
 
