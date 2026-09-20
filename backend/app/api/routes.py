@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import sqlite3
+import threading
 import zipfile
 from datetime import date, timedelta
 
@@ -135,13 +136,39 @@ def food_search(q: str = Query(min_length=1, max_length=80), limit: int = Query(
 
 
 @router.post("/food/barcode")
-def food_barcode(body: dict, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+def food_barcode(body: dict, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep)) -> dict:
     code = str(body.get("barcode", "")).strip()
     if not code:
         raise HTTPException(422, "barcode required")
-    food = store.get_food_by_barcode(conn, code)
-    # Milestone 6 adds the Open Food Facts mirror; until then only foods created here resolve.
-    return {"barcode": code, "food": food, "source": "local" if food else None}
+    try:
+        with db.transaction(conn):
+            return services.lookup_barcode(conn, code, online=settings.off_online_fallback)
+    except services.Invalid as exc:
+        raise raise_for(exc) from exc
+
+
+_off_job: threading.Thread | None = None
+
+
+@router.get("/admin/off")
+def off_status(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    from .. import off_import
+
+    return off_import.status(conn) | {"running": bool(_off_job and _off_job.is_alive())}
+
+
+@router.post("/admin/off/refresh", status_code=202)
+def off_refresh(settings: Settings = Depends(get_settings_dep)) -> dict:
+    """Start the mirror import in the background (the scheduler does this monthly)."""
+    global _off_job
+    from .. import off_import
+
+    if _off_job and _off_job.is_alive():
+        return {"started": False, "running": True}
+    _off_job = threading.Thread(target=off_import.run_import, args=(settings.db_path,),
+                                kwargs={"limit": settings.off_import_limit}, daemon=True, name="off-import")
+    _off_job.start()
+    return {"started": True, "running": True}
 
 
 @router.get("/food/entries")

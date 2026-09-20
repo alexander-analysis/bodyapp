@@ -20,6 +20,7 @@ export function Settings() {
       <ProfileCard />
       <TargetsCard />
       <EngineCard />
+      <FoodDbCard />
       <QueueCard />
       <DataCard />
       <InstallCard />
@@ -186,6 +187,24 @@ function EngineCard() {
         <p className="text-muted">Runs every Sunday night: trend → maintenance estimate → at most one target change, with a reason. Nothing has run yet.</p>
       )}
       <button className="btn btn-ghost w-full" disabled={busy} onClick={() => void run()}>Run the weekly review now</button>
+      {msg && <p className="text-xs text-muted">{msg}</p>}
+    </div>
+  );
+}
+
+// --- food database -------------------------------------------------------------
+
+function FoodDbCard() {
+  const [st, setSt] = useState<{ off_products: number; last_import: string | null; running: boolean } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = () => request<{ off_products: number; last_import: string | null; running: boolean }>("GET", "/api/v1/admin/off").then(setSt).catch(() => setSt(null));
+  useEffect(() => { void load(); }, []);
+  return (
+    <div className="card space-y-2 text-sm">
+      <div className="label">food database (Open Food Facts mirror)</div>
+      <p className="text-muted">{st ? `${st.off_products.toLocaleString()} products · last import ${st.last_import ? st.last_import.slice(0, 10) : "never"}${st.running ? " · importing…" : ""}` : "…"}</p>
+      <p className="text-xs text-muted">Refreshes monthly on the Pi. The first import streams ~1.3 GB from Open Food Facts and takes a while; barcodes that are missing are fetched live and cached.</p>
+      <button className="btn btn-ghost w-full" disabled={st?.running} onClick={() => void request("POST", "/api/v1/admin/off/refresh", {}).then(() => { setMsg("Import started in the background."); void load(); }).catch((e) => setMsg(describeError(e)))}>Import / refresh now</button>
       {msg && <p className="text-xs text-muted">{msg}</p>}
     </div>
   );

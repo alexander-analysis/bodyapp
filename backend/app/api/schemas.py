@@ -46,6 +46,7 @@ class FoodIn(Body):
     carbs_100g: float = Field(ge=0, le=100)
     fat_100g: float = Field(ge=0, le=100)
     fibre_100g: float = Field(default=0, ge=0, le=100)
+    barcode: str | None = Field(default=None, min_length=6, max_length=20, pattern=r"^\d+$")
     save: bool = True
 
 

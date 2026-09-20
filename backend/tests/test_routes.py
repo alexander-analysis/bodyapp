@@ -22,7 +22,7 @@ CHICKEN = {"name": "Chicken breast", "kcal_100g": 165, "protein_100g": 31, "carb
 def app_env(tmp_path: Path):
     settings = Settings(
         gemini_api_key=None, api_bearer_token=SecretStr(TOKEN), data_dir=tmp_path, db_path=tmp_path / "health.db",
-        photo_dir=tmp_path / "p", backup_dir=tmp_path / "b", scheduler_enabled=False,
+        photo_dir=tmp_path / "p", backup_dir=tmp_path / "b", scheduler_enabled=False, off_online_fallback=False,
     )
     with TestClient(create_app(settings, static_dir=tmp_path / "nowhere")) as c:
         yield c, settings
@@ -145,9 +145,56 @@ def test_favorites_round_trip_and_suggestions(client, app_env):
     assert client.delete(f"/api/v1/food/favorites/{fav_id}", headers=H).status_code == 200
 
 
-def test_barcode_lookup_is_local_only_for_now(client):
+def test_barcode_lookup_local_then_off_api(client, monkeypatch):
+    from app import services
+
     r = client.post("/api/v1/food/barcode", json={"barcode": "5449000000996"}, headers=H)
-    assert r.status_code == 200 and r.json()["food"] is None
+    assert r.status_code == 200 and r.json()["food"] is None and r.json()["source"] is None  # fallback off in tests
+    # a manually saved food with a barcode resolves locally
+    client.post("/api/v1/food/entry", json={"grams": 100, "food": {**CHICKEN, "barcode": "1234567890123"}}, headers=H)
+    r = client.post("/api/v1/food/barcode", json={"barcode": "1234567890123"}, headers=H)
+    assert r.json()["source"] == "local" and r.json()["food"]["name"] == "Chicken breast"
+    # the OFF API path, stubbed: cached as an 'off' food, second lookup is local
+    monkeypatch.setattr(services, "fetch_off_product", lambda code, timeout=4.0: {
+        "barcode": code, "name": "Skyr", "brand": "Arla", "kcal_100g": 63.0, "protein_100g": 11.0, "carbs_100g": 4.0, "fat_100g": 0.2, "fibre_100g": 0.0})
+    client.app.state.settings.off_online_fallback = True  # type: ignore[attr-defined]
+    r = client.post("/api/v1/food/barcode", json={"barcode": "5711953000000"}, headers=H)
+    assert r.json()["source"] == "off_api" and r.json()["food"]["source"] == "off"
+    assert client.post("/api/v1/food/barcode", json={"barcode": "5711953000000"}, headers=H).json()["source"] == "local"
+    assert client.post("/api/v1/food/barcode", json={"barcode": "abc"}, headers=H).status_code == 422
+
+
+def test_off_import_from_a_synthetic_export(client, app_env, tmp_path):
+    import gzip
+
+    from app import off_import
+
+    _, settings = app_env
+    cols = ["code", "product_name", "brands", "countries_tags", "energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g", "fiber_100g"]
+    rows = [
+        ["8410000000001", "Galletas Maria", "Cuetara", "en:spain", "440", "7", "75", "12", "3"],  # ok
+        ["8410000000002", "French thing", "X", "en:france", "300", "5", "50", "8", "1"],  # wrong country
+        ["8410000000003", "Hallucinated", "X", "en:spain,en:germany", "500", "5", "5", "5", "0"],  # macro inconsistency
+        ["8410000000004", "No nutrition", "X", "en:netherlands", "", "", "", "", ""],  # empty
+        ["8410000000005", "Knackebrot", "Wasa", "en:germany", "330", "9", "62", "1.5", "14"],  # ok
+        ["8410000000006", "KJ only", "X", "en:czech-republic", "", "10", "20", "5", ""],  # kcal missing, no kj column
+    ]
+    path = tmp_path / "off.csv.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        f.write(chr(9).join(cols) + chr(10))
+        for r in rows:
+            f.write(chr(9).join(r) + chr(10))
+    n = off_import.run_import(settings.db_path, file=str(path))
+    assert n == 2
+    r = client.post("/api/v1/food/barcode", json={"barcode": "8410000000005"}, headers=H).json()
+    assert r["source"] == "local" and r["food"]["name"] == "Knackebrot" and r["food"]["source"] == "off"
+    assert client.post("/api/v1/food/barcode", json={"barcode": "8410000000003"}, headers=H).json()["food"] is None
+    st = client.get("/api/v1/admin/off", headers=H).json()
+    assert st["off_products"] == 2 and st["last_import"] and st["running"] is False
+    # re-import updates in place, never duplicates
+    assert off_import.run_import(settings.db_path, file=str(path)) == 2
+    assert client.get("/api/v1/admin/off", headers=H).json()["off_products"] == 2
+    assert [f["name"] for f in client.get("/api/v1/food/search?q=knack", headers=H).json()["results"]] == ["Knackebrot"]
 
 
 # --- idempotency ---------------------------------------------------------------

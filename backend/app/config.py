@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     tz: str = "Europe/Madrid"
     log_level: str = "INFO"
     scheduler_enabled: bool = True  # tests turn the in-process jobs off
+    off_online_fallback: bool = True  # ask the OFF API for barcodes missing from the mirror
+    off_import_limit: int | None = None  # cap accepted rows per import (testing)
 
     @field_validator("gemini_api_key", mode="before")
     @classmethod

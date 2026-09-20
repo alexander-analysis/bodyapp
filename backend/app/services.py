@@ -174,10 +174,15 @@ def log_entry(conn: sqlite3.Connection, *, tz: str, day: date | None, logged_at:
         totals = validation.scale_entry(cand, grams)
         fibre = round(float(food.get("fibre_100g") or 0.0) * grams / 100.0, 1)
         if food.get("save", True):
-            saved = store.insert_food(conn, name=food["name"], brand=food.get("brand"), kcal_100g=food["kcal_100g"],
-                                      protein_100g=food["protein_100g"], carbs_100g=food["carbs_100g"], fat_100g=food["fat_100g"],
-                                      fibre_100g=float(food.get("fibre_100g") or 0.0), source="user", verified=True)
-            fid = saved["id"]
+            existing = store.get_food_by_barcode(conn, food["barcode"]) if food.get("barcode") else None
+            if existing:
+                fid = existing["id"]
+            else:
+                saved = store.insert_food(conn, name=food["name"], brand=food.get("brand"), kcal_100g=food["kcal_100g"],
+                                          protein_100g=food["protein_100g"], carbs_100g=food["carbs_100g"], fat_100g=food["fat_100g"],
+                                          fibre_100g=float(food.get("fibre_100g") or 0.0), source="user", verified=True,
+                                          barcode=food.get("barcode"))
+                fid = saved["id"]
     else:
         assert macros is not None
         totals = {"grams": grams, "kcal": float(macros["kcal"]), "protein_g": float(macros["protein_g"]),
@@ -499,3 +504,66 @@ def weekly_job(conn: sqlite3.Connection, *, today: date) -> dict:
     est = record_tdee_estimate(conn, today=today)
     review = run_weekly_review(conn, today=today, triggered_by="job")
     return {"tdee_estimate": est, "review": review}
+
+
+# --- barcode (milestone 6) -----------------------------------------------------
+
+OFF_API = "https://world.openfoodfacts.org/api/v2/product/{code}?fields=code,product_name,brands,nutriments"
+
+
+def lookup_barcode(conn: sqlite3.Connection, code: str, *, online: bool = True, timeout: float = 4.0) -> dict:
+    """Local mirror first (offline, free). If the product is missing and we are
+    online, ask the OFF API once and cache the answer as an ``off`` food."""
+    code = "".join(ch for ch in code if ch.isdigit())
+    if not code:
+        raise Invalid("barcode must be digits")
+    food = store.get_food_by_barcode(conn, code)
+    if food:
+        return {"barcode": code, "food": food, "source": "local"}
+    if not online:
+        return {"barcode": code, "food": None, "source": None}
+    fetched = fetch_off_product(code, timeout=timeout)
+    if fetched is None:
+        return {"barcode": code, "food": None, "source": None}
+    food = store.insert_food(conn, source="off", verified=False, **fetched)
+    return {"barcode": code, "food": food, "source": "off_api"}
+
+
+def fetch_off_product(code: str, *, timeout: float = 4.0) -> dict | None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(OFF_API.format(code=code), headers={"User-Agent": "health-platform-pi/0.1 (single user)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    product = data.get("product") or {}
+    if data.get("status") != 1 or not product:
+        return None
+    n = product.get("nutriments") or {}
+
+    def num(*keys: str) -> float | None:
+        for k in keys:
+            v = n.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+        return None
+
+    kcal = num("energy-kcal_100g")
+    kj = num("energy-kj_100g", "energy_100g")
+    if kcal is None and kj is not None:
+        kcal = kj / 4.184
+    p, c, f = num("proteins_100g"), num("carbohydrates_100g"), num("fat_100g")
+    name = (product.get("product_name") or "").strip()
+    if kcal is None or p is None or c is None or f is None or not name:
+        return None
+    if not (0 <= kcal <= 900 and 0 <= p <= 100 and 0 <= c <= 100 and 0 <= f <= 100) or not validation.macros_consistent(kcal, p, c, f):
+        return None
+    return {
+        "barcode": code, "name": name[:120], "brand": ((product.get("brands") or "").strip() or None),
+        "kcal_100g": round(kcal, 1), "protein_100g": round(p, 1), "carbs_100g": round(c, 1), "fat_100g": round(f, 1),
+        "fibre_100g": round(max(0.0, min(num("fiber_100g") or 0.0, 100.0)), 1),
+    }

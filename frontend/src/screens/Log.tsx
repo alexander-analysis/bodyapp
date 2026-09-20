@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { BarcodeScanner } from "../components/BarcodeScanner";
 import { PortionPicker } from "../components/PortionPicker";
 import { Sheet } from "../components/Sheet";
 import { deleteFavorite, logEntry, logFavorite, logFoodById, previewFor, saveFavorite, type EntryBody } from "../lib/actions";
-import { get } from "../lib/api";
+import { describeError, get, request } from "../lib/api";
 import { MEALS, guessMeal, kcal as fmtKcal } from "../lib/format";
 import { useFavorites, useToday } from "../lib/hooks";
 import type { Favorite, Food, Meal, Suggestion } from "../lib/types";
@@ -33,10 +34,71 @@ export function Log() {
         ))}
       </div>
       {tab === "camera" && <ComingSoon what="Photo identification" when="milestone 7" gemini={gemini} onFallback={() => setTab("search")} />}
-      {tab === "barcode" && <ComingSoon what="Barcode scanning" when="milestone 6" onFallback={() => setTab("search")} />}
+      {tab === "barcode" && <BarcodeTab active={tab === "barcode"} onDone={done} onManual={(code) => setParams({ tab: "manual", barcode: code }, { replace: true })} />}
       {tab === "favorites" && <FavoritesTab onDone={done} />}
       {tab === "search" && <SearchTab onDone={done} gemini={gemini} />}
       {tab === "manual" && <ManualTab onDone={done} />}
+    </div>
+  );
+}
+
+// --- barcode -------------------------------------------------------------------
+
+function BarcodeTab({ active, onDone, onManual }: { active: boolean; onDone: () => void; onManual: (code: string) => void }) {
+  const [code, setCode] = useState("");
+  const [typed, setTyped] = useState("");
+  const [food, setFood] = useState<Food | null>(null);
+  const [state, setState] = useState<"idle" | "looking" | "missing" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const lookup = useCallback(async (c: string) => {
+    setCode(c);
+    setState("looking");
+    setError(null);
+    try {
+      const r = await request<{ barcode: string; food: Food | null; source: string | null }>("POST", "/api/v1/food/barcode", { barcode: c });
+      if (r.food) {
+        setFood(r.food);
+        setState("idle");
+      } else setState("missing");
+    } catch (e) {
+      setError(describeError(e));
+      setState("error");
+    }
+  }, []);
+
+  return (
+    <div className="space-y-3">
+      <BarcodeScanner active={active && food == null} onCode={(c) => void lookup(c)} />
+      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (typed.trim().length >= 6) void lookup(typed.trim()); }}>
+        <input inputMode="numeric" value={typed} onChange={(e) => setTyped(e.target.value.replace(/\D/g, ""))} placeholder="…or type the barcode" />
+        <button className="btn btn-ghost" type="submit" disabled={typed.trim().length < 6}>Look up</button>
+      </form>
+      {state === "looking" && <p className="text-sm text-muted">Looking up {code}…</p>}
+      {state === "error" && <p className="text-sm text-danger">{error}</p>}
+      {state === "missing" && (
+        <div className="card text-sm space-y-2">
+          <p className="text-muted">{code} is not in the local database or Open Food Facts. Add it from the label once and it will scan next time.</p>
+          <button className="btn btn-primary w-full" onClick={() => onManual(code)}>Add from label</button>
+        </div>
+      )}
+      <Sheet open={food != null} onClose={() => setFood(null)} title={food?.name}>
+        {food && (
+          <>
+            <p className="text-xs text-muted mb-3">{food.brand && `${food.brand} · `}{Math.round(food.kcal_100g)} kcal · P {food.protein_100g} · C {food.carbs_100g} · F {food.fat_100g} per 100 g · {food.source === "off" ? "Open Food Facts" : "your database"}</p>
+            <PortionPicker
+              initialGrams={100}
+              per100={food}
+              onConfirm={(grams, meal) => {
+                const body: EntryBody = { food_id: food.id, grams, meal, input_method: "barcode" };
+                void logEntry(body, previewFor({ ...body, food: { name: food.name, kcal_100g: food.kcal_100g, protein_100g: food.protein_100g, carbs_100g: food.carbs_100g, fat_100g: food.fat_100g, fibre_100g: food.fibre_100g ?? 0 } }, food.name));
+                setFood(null);
+                onDone();
+              }}
+            />
+          </>
+        )}
+      </Sheet>
     </div>
   );
 }
@@ -175,6 +237,8 @@ function SearchTab({ onDone, gemini }: { onDone: () => void; gemini: boolean }) 
 // --- manual --------------------------------------------------------------------
 
 function ManualTab({ onDone }: { onDone: () => void }) {
+  const [params] = useSearchParams();
+  const barcode = params.get("barcode") || null;
   const [mode, setMode] = useState<"per100" | "totals">("per100");
   const [name, setName] = useState("");
   const [grams, setGrams] = useState("100");
@@ -194,7 +258,7 @@ function ManualTab({ onDone }: { onDone: () => void }) {
   const submit = () => {
     let body: EntryBody;
     if (mode === "per100") {
-      body = { meal, grams: gramsN, input_method: "manual", food: { name: name.trim(), kcal_100g: n(kcal), protein_100g: n(protein), carbs_100g: n(carbs), fat_100g: n(fat), fibre_100g: n(fibre), save } };
+      body = { meal, grams: gramsN, input_method: barcode ? "barcode" : "manual", food: { name: name.trim(), kcal_100g: n(kcal), protein_100g: n(protein), carbs_100g: n(carbs), fat_100g: n(fat), fibre_100g: n(fibre), save, ...(barcode ? { barcode } : {}) } };
     } else {
       body = { meal, grams: gramsN, input_method: "manual", macros: { kcal: n(kcal), protein_g: n(protein), carbs_g: n(carbs), fat_g: n(fat), fibre_g: n(fibre) } };
     }
@@ -208,6 +272,7 @@ function ManualTab({ onDone }: { onDone: () => void }) {
         <button type="button" className={`btn py-2 ${mode === "per100" ? "btn-primary" : "btn-ghost"}`} onClick={() => setMode("per100")}>Per 100 g (reusable)</button>
         <button type="button" className={`btn py-2 ${mode === "totals" ? "btn-primary" : "btn-ghost"}`} onClick={() => setMode("totals")}>Totals (one-off)</button>
       </div>
+      {barcode && mode === "per100" && <p className="text-xs text-accent">Barcode {barcode} will be attached — next scan resolves instantly.</p>}
       {mode === "per100" && <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Food name" />}
       <div className="grid grid-cols-2 gap-2">
         <Field label="grams eaten" value={grams} set={setGrams} />

@@ -7,7 +7,7 @@ export interface EntryBody {
   meal: Meal | null;
   grams: number;
   food_id?: number;
-  food?: { name: string; brand?: string | null; kcal_100g: number; protein_100g: number; carbs_100g: number; fat_100g: number; fibre_100g?: number; save?: boolean };
+  food?: { name: string; brand?: string | null; kcal_100g: number; protein_100g: number; carbs_100g: number; fat_100g: number; fibre_100g?: number; save?: boolean; barcode?: string };
   macros?: Macros;
   input_method: "barcode" | "photo" | "text" | "favorite" | "manual";
   confidence?: number;
