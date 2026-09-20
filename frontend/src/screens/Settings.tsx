@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ApiError, describeError, downloadExport, getToken, request, setToken } from "../lib/api";
 import { dayMonth, todayISO } from "../lib/format";
-import { useHealth, useTargets, useToday } from "../lib/hooks";
+import { useHealth, useReview, useTargets, useToday } from "../lib/hooks";
 import { useInstall } from "../lib/install";
 import { discardFailed, retryFailed, usePending } from "../lib/outbox";
 import type { Phase, Profile, Target } from "../lib/types";
@@ -19,6 +19,7 @@ export function Settings() {
       <Link to="/summary" className="card block"><div className="font-medium">Weekly summary →</div><div className="text-xs text-muted">Trend change, adherence, maintenance estimate, target changes.</div></Link>
       <ProfileCard />
       <TargetsCard />
+      <EngineCard />
       <QueueCard />
       <DataCard />
       <InstallCard />
@@ -146,6 +147,46 @@ function TargetsCard() {
           </ul>
         </details>
       )}
+    </div>
+  );
+}
+
+// --- engine --------------------------------------------------------------------
+
+function EngineCard() {
+  const q = useReview();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const latest = q.data?.latest ?? null;
+  const run = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const out = await request<{ review: import("../lib/types").Review }>("POST", "/api/v1/review/run", {});
+      const r = out.review;
+      setMsg(r.target ? `Changed: ${r.target.kcal} kcal / ${r.target.steps} steps — ${r.reason}` : `No change — ${r.reason}`);
+      await qc.invalidateQueries();
+    } catch (e) {
+      setMsg(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div id="engine" className="card space-y-2 text-sm">
+      <div className="label">weekly review (engine)</div>
+      {latest ? (
+        <div>
+          <div><span className="capitalize">{latest.assessment.replace(/_/g, " ")}</span>{latest.rate_pct_week != null && <span className="text-muted"> · trend {latest.rate_pct_week > 0 ? "−" : "+"}{Math.abs(latest.rate_pct_week).toFixed(2)}%/week</span>} <span className="text-muted">· {dayMonth(latest.reviewed_on)}</span></div>
+          <div className="text-xs text-muted">{latest.reason}</div>
+          {latest.proposals.map((p) => <div key={p} className="text-xs text-warn mt-1">Proposal: {p} (change the phase above to accept)</div>)}
+        </div>
+      ) : (
+        <p className="text-muted">Runs every Sunday night: trend → maintenance estimate → at most one target change, with a reason. Nothing has run yet.</p>
+      )}
+      <button className="btn btn-ghost w-full" disabled={busy} onClick={() => void run()}>Run the weekly review now</button>
+      {msg && <p className="text-xs text-muted">{msg}</p>}
     </div>
   );
 }

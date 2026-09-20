@@ -75,6 +75,19 @@ def get_targets(conn: sqlite3.Connection = Depends(get_conn), day: date = Depend
     return {"current": store.current_target_row(conn, day), "history": store.list_targets(conn)}
 
 
+@router.get("/review")
+def reviews(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    return {"latest": store.latest_review(conn), "history": store.list_reviews(conn), "tdee_history": store.list_tdee_estimates(conn)}
+
+
+@router.post("/review/run", status_code=201)
+def run_review(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+    """Run the weekly job now (the timer does this Sunday night). Idempotent in
+    effect: the change-rate rail rejects a second change inside seven days."""
+    with db.transaction(conn):
+        return services.weekly_job(conn, today=day)
+
+
 @router.post("/targets/override", status_code=201)
 def override(body: TargetOverrideIn, conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
     fields = body.model_dump()

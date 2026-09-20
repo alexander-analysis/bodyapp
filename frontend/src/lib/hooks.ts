@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { get } from "./api";
 import { onFlushed } from "./outbox";
-import type { Exercise, Favorite, Health, History, NextSession, Summary, Template, Today, TrendPayload, Volume, Workout } from "./types";
+import type { Exercise, Favorite, Health, History, NextSession, ReviewPayload, Summary, Template, Today, TrendPayload, Volume, Workout } from "./types";
 
 export const useToday = () => useQuery({ queryKey: ["today"], queryFn: () => get<Today>("/api/v1/today") });
 export const useTrend = (days: number) =>
@@ -24,6 +24,7 @@ export const useRecentWorkouts = () =>
   useQuery({ queryKey: ["workouts"], queryFn: () => get<{ workouts: Workout[] }>("/api/v1/workout/recent?limit=10") });
 export const useTargets = () =>
   useQuery({ queryKey: ["targets"], queryFn: () => get<{ current: import("./types").Target | null; history: import("./types").Target[] }>("/api/v1/targets") });
+export const useReview = () => useQuery({ queryKey: ["review"], queryFn: () => get<ReviewPayload>("/api/v1/review") });
 export const useHealth = () => useQuery({ queryKey: ["health"], queryFn: () => get<Health>("/api/v1/health"), staleTime: 60_000 });
 
 /** Re-fetch everything once queued writes have landed. */

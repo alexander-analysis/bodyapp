@@ -271,3 +271,35 @@ def test_weekly_summary_has_the_numbers_and_no_narrative_yet(client):
     assert s["days_logged"] == 1 and s["tdee"]["method"] == "formula"
     assert s["adherence"]["days_considered"] == 0  # one entry is not a logged-complete day
     assert s["volume"]["window_days"] == 7 and s["events"] == []
+
+
+def test_weekly_job_records_tdee_and_reviews_through_the_rails(client, app_env):
+    """Three weeks of a stalled cut: the job writes a tdee_estimates row, one target
+    change with a reason, and a review_log row; a second run inside 7 days is rejected."""
+    _, settings = app_env
+    today = date.fromisoformat(today_iso(app_env))
+    conn = db.connect(settings.db_path)
+    with db.transaction(conn):
+        # the initial target was written today by the fixture; pretend it is a month old
+        conn.execute("UPDATE targets SET effective_from = ?", ((today - timedelta(days=30)).isoformat(),))
+        for i in range(21, -1, -1):
+            d = today - timedelta(days=i)
+            store.upsert_weight(conn, day=d, weight_kg=82.0 + 0.02 * (i % 3), waist_cm=None, source="manual", health_event_id=None)
+            from app.engine.types import DayRow
+            store.upsert_rollup(conn, DayRow(d, kcal=1970.0, protein_g=165.0, carbs_g=200.0, fat_g=80.0, fibre_g=30.0,
+                                             steps=9000, logged_complete=True, mean_confidence=0.9))
+    conn.close()
+    r = client.post("/api/v1/review/run", headers=H)
+    assert r.status_code == 201
+    out = r.json()
+    assert out["tdee_estimate"]["method"] == "adaptive" and out["tdee_estimate"]["confidence"] > 0.5
+    review = out["review"]
+    assert review["assessment"] == "stalled" and review["target"] is not None
+    assert review["target"]["kcal"] == 1970 - 150 and "stalled" in review["target"]["reason"]
+    assert review["target"]["set_by"] == "engine" and review["triggered_by"] == "job"
+    # second run within seven days: the rail rejects the change and the log says so
+    again = client.post("/api/v1/review/run", headers=H).json()["review"]
+    assert again["target"] is None and guards.RAIL_CHANGE_RATE in again["rails"]
+    got = client.get("/api/v1/review", headers=H).json()
+    assert got["latest"]["id"] == again["id"] and len(got["history"]) == 2 and len(got["tdee_history"]) == 2
+    assert len(client.get("/api/v1/targets", headers=H).json()["history"]) == 2

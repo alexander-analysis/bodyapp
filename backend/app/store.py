@@ -596,7 +596,7 @@ def prune_idempotent(conn: sqlite3.Connection, *, older_than_hours: int = 24) ->
 # --- export --------------------------------------------------------------------
 
 EXPORT_TABLES = ("users", "health_events", "weight_logs", "food_entries", "workouts", "exercise_sets", "exercises", "targets",
-                 "daily_rollup", "tdee_estimates", "favorites", "templates", "llm_calls")
+                 "daily_rollup", "tdee_estimates", "favorites", "templates", "llm_calls", "review_log")
 
 
 def export_rows(conn: sqlite3.Connection, table: str) -> tuple[list[str], list[tuple]]:
@@ -606,3 +606,59 @@ def export_rows(conn: sqlite3.Connection, table: str) -> tuple[list[str], list[t
     cur = conn.execute(sql)
     cols = [c[0] for c in cur.description]
     return cols, [tuple(r) for r in cur.fetchall()]
+
+
+# --- review log ----------------------------------------------------------------
+
+def insert_review(conn: sqlite3.Connection, *, reviewed_on: date, assessment: str, rate_pct_week: float | None, reason: str,
+                  proposals: Sequence[str], rails: Sequence[str], target_id: int | None, triggered_by: str) -> dict:
+    cur = conn.execute(
+        "INSERT INTO review_log (user_id, reviewed_on, assessment, rate_pct_week, reason, proposals_json, rails_json, target_id, triggered_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (USER_ID, reviewed_on.isoformat(), assessment, rate_pct_week, reason, json.dumps(list(proposals)), json.dumps(list(rails)),
+         target_id, triggered_by),
+    )
+    return get_review(conn, cur.lastrowid)  # type: ignore[arg-type,return-value]
+
+
+def get_review(conn: sqlite3.Connection, review_id: int) -> dict | None:
+    r = _row(conn.execute("SELECT * FROM review_log WHERE id = ?", (review_id,)))
+    return _review(r) if r else None
+
+
+def _review(r: dict) -> dict:
+    r["proposals"] = json.loads(r.pop("proposals_json") or "[]")
+    r["rails"] = json.loads(r.pop("rails_json") or "[]")
+    return r
+
+
+def list_reviews(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
+    rows = _rows(conn.execute("SELECT * FROM review_log WHERE user_id = ? ORDER BY reviewed_on DESC, id DESC LIMIT ?", (USER_ID, limit)))
+    return [_review(r) for r in rows]
+
+
+def latest_review(conn: sqlite3.Connection) -> dict | None:
+    rows = list_reviews(conn, limit=1)
+    return rows[0] if rows else None
+
+
+def list_tdee_estimates(conn: sqlite3.Connection, limit: int = 26) -> list[dict]:
+    return _rows(conn.execute("SELECT * FROM tdee_estimates WHERE user_id = ? ORDER BY computed_on DESC, id DESC LIMIT ?", (USER_ID, limit)))
+
+
+# --- app settings --------------------------------------------------------------
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    r = _row(conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)))
+    return r["value"] if r else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+        (key, value),
+    )
+
+
+def all_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    return {r["key"]: r["value"] for r in _rows(conn.execute("SELECT key, value FROM app_settings"))}

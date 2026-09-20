@@ -30,11 +30,11 @@ def test_backup_restore_round_trip(live_db: Path, tmp_path: Path):
     restored = backup.restore(out, tmp_path / "restored" / "health.db")
     conn = db.connect(restored)
     assert conn.execute("SELECT weight_kg FROM weight_logs").fetchone()[0] == 80.0
-    assert db.schema_version(conn) == "0002"
+    assert db.schema_version(conn) == "0003"
     conn.close()
 
     info = backup.verify(out)
-    assert info["integrity"] == "ok" and info["users"] == 1 and info["weight_logs"] == 1 and info["schema"] == "0002"
+    assert info["integrity"] == "ok" and info["users"] == 1 and info["weight_logs"] == 1 and info["schema"] == "0003"
 
 
 def test_restore_refuses_to_overwrite(live_db: Path, tmp_path: Path):

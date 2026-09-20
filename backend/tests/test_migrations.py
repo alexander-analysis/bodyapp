@@ -8,6 +8,7 @@ from app import db, migrate
 EXPECTED_TABLES = {
     "users", "health_events", "weight_logs", "foods", "food_entries", "workouts", "exercises",
     "exercise_sets", "targets", "daily_rollup", "tdee_estimates", "llm_calls", "favorites", "idempotency_keys", "templates",
+    "review_log", "app_settings",
 }
 LOG_TABLES_WITH_EVENT_FK = {"weight_logs", "food_entries", "workouts", "daily_rollup"}
 
@@ -30,7 +31,7 @@ def columns(conn: sqlite3.Connection, table: str) -> dict[str, dict]:
 def test_upgrade_creates_every_table_and_records_the_revision(migrated):
     conn = db.connect(migrated)
     assert EXPECTED_TABLES <= tables(conn)
-    assert db.schema_version(conn) == "0002"
+    assert db.schema_version(conn) == "0003"
     conn.close()
 
 

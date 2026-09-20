@@ -241,3 +241,31 @@ export interface Health {
   gemini: string;
   backup_newest_age_h: number | null;
 }
+
+export interface Review {
+  id: number;
+  reviewed_on: string;
+  assessment: string;
+  rate_pct_week: number | null;
+  reason: string;
+  proposals: string[];
+  rails: string[];
+  target_id: number | null;
+  triggered_by: "job" | "user";
+  target?: Target | null;
+}
+
+export interface TdeeRow {
+  id: number;
+  computed_on: string;
+  window_days: number;
+  tdee_kcal: number;
+  confidence: number;
+  method: "formula" | "adaptive";
+}
+
+export interface ReviewPayload {
+  latest: Review | null;
+  history: Review[];
+  tdee_history: TdeeRow[];
+}

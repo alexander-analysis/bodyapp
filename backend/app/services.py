@@ -453,3 +453,49 @@ def weekly_summary(conn: sqlite3.Connection, *, today: date) -> dict:
         "estimates_flagged": bool(adherence and adherence.mean_confidence is not None and adherence.mean_confidence < 0.6),
         "narrative": None,
     }
+
+
+# --- weekly jobs (milestones 4 and 5) ------------------------------------------
+
+def record_tdee_estimate(conn: sqlite3.Connection, *, today: date) -> dict | None:
+    """Weekly recompute (spec 5.2): persist the current estimate to ``tdee_estimates``."""
+    est = tdee_estimate(conn, today)
+    if est is None or not est.tdee_kcal:
+        return None
+    return store.insert_tdee_estimate(conn, computed_on=today, window_days=est.window_days, tdee_kcal=est.tdee_kcal,
+                                      confidence=est.confidence, method=est.method)
+
+
+def run_weekly_review(conn: sqlite3.Connection, *, today: date, triggered_by: str = "job") -> dict:
+    """Sunday-night target review (spec 5.3). At most one change, always through the
+    rails, and every outcome — including "no change" — is logged with its reason."""
+    profile = store.user_profile(conn)
+    current = store.current_target(conn, today)
+    if profile is None or current is None:
+        row = store.insert_review(conn, reviewed_on=today, assessment="no_target", rate_pct_week=None,
+                                  reason="no profile or target yet", proposals=(), rails=(), target_id=None, triggered_by=triggered_by)
+        return row
+    series = refresh_trend(conn)
+    ctx = targets.ReviewContext(
+        today=today, profile=profile, current=current, trend=series, events=store.list_events(conn),
+        days=store.rollup_days(conn, today - timedelta(days=targets.REVIEW_WINDOW_DAYS - 1), today),
+        last_change_on=store.last_change_on(conn), previous_stall_action=store.last_stall_action(conn),  # type: ignore[arg-type]
+        maintenance_kcal=current_maintenance_kcal(conn, today),
+    )
+    result = targets.weekly_review(ctx)
+    target_row = store.insert_target(conn, result.proposed) if result.proposed is not None else None
+    row = store.insert_review(
+        conn, reviewed_on=today, assessment=result.assessment, rate_pct_week=result.rate_pct_week, reason=result.reason,
+        proposals=result.proposals, rails=result.rails_tripped, target_id=target_row["id"] if target_row else None,
+        triggered_by=triggered_by,
+    )
+    row["target"] = target_row
+    return row
+
+
+def weekly_job(conn: sqlite3.Connection, *, today: date) -> dict:
+    """Sunday night, after the rollup: rollup -> trend -> TDEE estimate -> review."""
+    nightly_rollup(conn, today=today)
+    est = record_tdee_estimate(conn, today=today)
+    review = run_weekly_review(conn, today=today, triggered_by="job")
+    return {"tdee_estimate": est, "review": review}
