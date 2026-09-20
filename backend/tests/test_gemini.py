@@ -235,3 +235,42 @@ def test_narrative_uses_gemini_when_available(client, monkeypatch):
     r = client.post("/api/v1/summary/narrative", json={"force": True}, headers=H).json()
     assert r["source"] == "gemini" and r["text"].startswith("A calm week.")
     assert client.get("/api/v1/today", headers=H).json()["llm"]["calls_today"] == 1
+
+
+def test_progress_photo_analysis_series_and_reference(client, env, monkeypatch):
+    settings, _ = env
+    analysis = {"body_fat_estimate_pct": 18.5, "muscularity_score": 5.5, "progress_to_reference_pct": 35, "actor_match_name": "Some Actor",
+                "actor_match_why": "similar build", "visible_changes": "first photo", "coaching_notes": "keep going", "confidence": 0.6}
+    stub = Stub([gemini_response(analysis), gemini_response({**analysis, "progress_to_reference_pct": 40, "body_fat_estimate_pct": 17.9})])
+    monkeypatch.setattr(gemini.Gemini, "_post", lambda self, body: stub(body))
+    ref = client.get("/api/v1/settings/physique", headers=H).json()
+    assert ref["name"] == "Richardson" and ref["is_default"]
+    r = client.put("/api/v1/settings/physique", json={"name": "Richardson", "description": "lean and defined, 10% body fat"}, headers=H)
+    assert r.status_code == 200 and not r.json()["is_default"]
+
+    r = client.post("/api/v1/progress/photo", files={"file": ("me.jpg", jpeg(), "image/jpeg")}, headers=H)
+    assert r.status_code == 201
+    p = r.json()
+    assert p["ok"] and p["progress_pct"] == 35 and p["actor_match"] == "Some Actor" and p["path"].startswith("progress/")
+    assert (settings.photo_dir / p["path"]).exists() and p["reference_name"] == "Richardson"
+    # second day: the previous assessment is passed for a consistent scale; the series grows
+    from datetime import date as _d, timedelta as _td
+    yesterday = (_d.fromisoformat(p["taken_on"]) - _td(days=1)).isoformat()
+    r2 = client.post(f"/api/v1/progress/photo?taken_on={yesterday}", files={"file": ("me.jpg", jpeg(color=(1, 2, 3)), "image/jpeg")}, headers=H)
+    assert r2.status_code == 201 and r2.json()["progress_pct"] == 40
+    lst = client.get("/api/v1/progress/photos", headers=H).json()
+    assert [s["progress_pct"] for s in lst["series"]] == [40, 35] and len(lst["photos"]) == 2
+    assert client.get(f"/api/v1/photos/{p['path']}", headers=H).status_code == 200
+    assert client.delete(f"/api/v1/progress/photos/{p['id']}", headers=H).status_code == 200
+    assert not (settings.photo_dir / p["path"]).exists()
+    assert client.get("/api/v1/today", headers=H).json()["target"]["kcal"] > 0  # and none of it touched the target
+
+
+def test_progress_photo_kept_when_gemini_is_down(client, monkeypatch):
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    stub = Stub([gemini.TransientError("network")] * 3 + [gemini_response({"body_fat_estimate_pct": 20, "muscularity_score": 5, "progress_to_reference_pct": 30, "actor_match_name": "X", "actor_match_why": "", "visible_changes": "", "coaching_notes": "", "confidence": 0.5})])
+    monkeypatch.setattr(gemini.Gemini, "_post", lambda self, body: stub(body))
+    p = client.post("/api/v1/progress/photo", files={"file": ("me.jpg", jpeg(), "image/jpeg")}, headers=H).json()
+    assert p["ok"] is False and p["analysis"] is None and "not analysed" in p["error"]
+    again = client.post(f"/api/v1/progress/photos/{p['id']}/reanalyze", headers=H).json()
+    assert again["ok"] and again["progress_pct"] == 30

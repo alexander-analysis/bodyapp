@@ -24,7 +24,7 @@ def test_health_is_public_and_reports_schema(client):
     r = client.get("/api/v1/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "ok" and body["db"] == "ok" and body["schema"] == "0003"
+    assert body["status"] == "ok" and body["db"] == "ok" and body["schema"] == "0004"
     assert body["backup_newest_age_h"] is None
     assert "version" in body
 

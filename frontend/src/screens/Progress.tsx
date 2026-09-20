@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { PhysiqueSection } from "../components/Physique";
 import { TrendChart } from "../components/TrendChart";
 import { dayMonth } from "../lib/format";
-import { useExercises, useHistory, useReview, useTrend, useVolume } from "../lib/hooks";
+import { useExercises, useHistory, useReview, useToday, useTrend, useVolume } from "../lib/hooks";
 
 const TOOLTIP = { background: "#171a21", border: "1px solid #2a2f3a", borderRadius: 12, fontSize: 12 };
 
@@ -13,11 +14,14 @@ export function Progress() {
   const history = useHistory(exerciseId);
   const volume = useVolume();
   const review = useReview();
+  const today = useToday();
   const tdee = [...(review.data?.tdee_history ?? [])].reverse();
 
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Progress</h1>
+
+      <PhysiqueSection enabled={today.data?.gemini_enabled ?? false} />
 
       <section className="card">
         <div className="label mb-2">trend weight · 90 days</div>

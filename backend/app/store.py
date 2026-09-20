@@ -596,7 +596,7 @@ def prune_idempotent(conn: sqlite3.Connection, *, older_than_hours: int = 24) ->
 # --- export --------------------------------------------------------------------
 
 EXPORT_TABLES = ("users", "health_events", "weight_logs", "food_entries", "workouts", "exercise_sets", "exercises", "targets",
-                 "daily_rollup", "tdee_estimates", "favorites", "templates", "llm_calls", "review_log")
+                 "daily_rollup", "tdee_estimates", "favorites", "templates", "llm_calls", "review_log", "progress_photos")
 
 
 def export_rows(conn: sqlite3.Connection, table: str) -> tuple[list[str], list[tuple]]:

@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .. import db, gemini, llm_services, services, store
+from .. import db, gemini, llm_services, physique, services, store
 from ..config import API_PREFIX, Settings
 from .deps import current_target_kcal, get_conn, get_settings_dep, get_today, raise_for
 from .schemas import (
@@ -428,6 +428,65 @@ def ask(body: dict, conn: sqlite3.Connection = Depends(get_conn), settings: Sett
 def llm_admin(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today), settings: Settings = Depends(get_settings_dep)) -> dict:
     return {"enabled": settings.gemini_enabled, "model": settings.gemini_model if settings.gemini_enabled else None,
             **gemini.stats(conn, today=day), "recent": gemini.recent_calls(conn)}
+
+
+# --- progress photos (addition beyond the spec; estimates for display only) -------
+
+@router.get("/progress/photos")
+def progress_photos(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    return {"photos": physique.list_photos(conn), "series": physique.series(conn), "reference": physique.reference(conn)}
+
+
+@router.post("/progress/photo", status_code=201)
+async def progress_photo(file: UploadFile = File(...), taken_on: date | None = None, conn: sqlite3.Connection = Depends(get_conn),
+                         settings: Settings = Depends(get_settings_dep), day: date = Depends(get_today)) -> dict:
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES or not raw:
+        raise HTTPException(413 if raw else 422, "image too large (12 MB max)" if raw else "empty upload")
+    on = taken_on or day
+    if on > day:
+        raise HTTPException(422, "taken_on cannot be in the future")
+    try:
+        with db.transaction(conn):
+            return physique.analyze(conn, settings, raw, taken_on=on, today=day)
+    except Exception as exc:  # noqa: BLE001 — unreadable image
+        if "cannot identify image" in str(exc).lower() or "image" in type(exc).__name__.lower():
+            raise HTTPException(422, f"could not read the image: {exc}") from exc
+        raise
+
+
+@router.post("/progress/photos/{photo_id}/reanalyze")
+def progress_reanalyze(photo_id: int, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep),
+                       day: date = Depends(get_today)) -> dict:
+    try:
+        with db.transaction(conn):
+            return physique.reanalyze(conn, settings, photo_id, today=day)
+    except KeyError as exc:
+        raise HTTPException(404, f"photo {photo_id}") from exc
+
+
+@router.delete("/progress/photos/{photo_id}")
+def progress_delete(photo_id: int, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep)) -> dict:
+    with db.transaction(conn):
+        ok = physique.delete_photo(conn, settings, photo_id)
+    if not ok:
+        raise HTTPException(404, f"photo {photo_id}")
+    return {"deleted": photo_id}
+
+
+@router.get("/settings/physique")
+def physique_settings(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    return physique.reference(conn)
+
+
+@router.put("/settings/physique")
+def physique_settings_put(body: dict, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    name = str(body.get("name", "")).strip()
+    desc = str(body.get("description", "")).strip()
+    if not name or not desc:
+        raise HTTPException(422, "name and description are required")
+    with db.transaction(conn):
+        return physique.set_reference(conn, name=name, description=desc)
 
 
 # --- summary -------------------------------------------------------------------

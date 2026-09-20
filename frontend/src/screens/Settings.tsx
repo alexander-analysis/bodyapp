@@ -5,6 +5,7 @@ import { ApiError, describeError, downloadExport, getToken, request, setToken } 
 import { dayMonth, todayISO } from "../lib/format";
 import { useHealth, useReview, useTargets, useToday } from "../lib/hooks";
 import { ModesCard } from "../components/Modes";
+import { PhysiqueReferenceCard } from "../components/Physique";
 import { useInstall } from "../lib/install";
 import { discardFailed, retryFailed, usePending } from "../lib/outbox";
 import type { Phase, Profile, Target } from "../lib/types";
@@ -22,6 +23,7 @@ export function Settings() {
       <ModesCard />
       <TargetsCard />
       <EngineCard />
+      <PhysiqueReferenceCard />
       <FoodDbCard />
       <QueueCard />
       <DataCard />
