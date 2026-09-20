@@ -68,6 +68,34 @@ values changes nothing.
 Excluded ≠ unlogged: a sick day with tagged rows is not a logging gap, and days
 covered by an event are transparent to the gap detector.
 
+## Gemini boundaries (milestones 7-9)
+
+- `app/gemini.py` is the only module that talks to the model. Every call:
+  structured `responseSchema`, Pydantic validation *before* anything touches
+  the DB, `engine.validation` bounds + macro check on every food candidate,
+  hard daily cap (`GEMINI_DAILY_CALL_CAP`, logged when refused), retries with
+  backoff, an `llm_calls` row per call, 24 h perceptual-hash cache for photos.
+- `/food/photo` and `/food/text` return candidates and write nothing; only
+  `/food/entry` writes, after the user confirms the portion.
+- `/ask` passes rows scoped by the date range parsed from the question
+  (`llm_services.parse_range`, max 92 days), never the whole database.
+- The weekly narrative renders the summary numbers; the template fallback
+  (`template_narrative`) renders the same numbers when the model is down.
+- Physique analysis (`app/physique.py`) produces the model's *estimates*
+  (body fat, muscularity, % toward the reference, actor match) for display
+  only. They never feed targets, rollups or guardrails.
+- Symptom severity suggestions are never applied automatically.
+
+## Modes (milestone 8)
+
+During an illness or its return ramp the Today target is *held* at
+maintenance at read time (`services.effective_target`); no `targets` row is
+written, so the cut resumes by itself. Writes during illness still go through
+`apply_rails`, which forces `maintain`. Starting an event retags rows logged
+since its start; ending one earlier untags the later rows. "Recovered now"
+means yesterday was the last sick day (a same-day event stays active until
+midnight); the ramp is `min(duration, 7)` days.
+
 ## Layout
 
 ```
@@ -78,6 +106,12 @@ backend/app/migrate.py  runs Alembic programmatically (startup + tests)
 backend/alembic/        hand-written SQL migrations (no autogenerate)
 backend/tests/          pytest; fixtures/synthetic.py = 60 days with a 4-day illness on days 30-33
 backend/app/backup.py   SQLite online-backup CLI (python -m app.backup); runs inside the container from a timer
+backend/app/store.py    every SQL statement (rows in, dicts/dataclasses out)
+backend/app/services.py orchestration per user action; llm_services.py for the Gemini jobs; physique.py for progress photos
+backend/app/api/        routes.py (all of /api/v1), schemas.py (request bodies), deps.py
+backend/app/scheduler.py nightly rollup 00:10, prune 03:00, weekly review Sun 23:30, OFF refresh 1st 04:30
+backend/app/off_import.py Open Food Facts streaming importer (python -m app.off_import)
+backend/dev.py          local dev launcher (scratch data dir, fixed dev token)
 frontend/               React + Vite + TS; milestone-2 shell only, the PWA arrives in milestone 3
 deploy/                 compose, Caddyfile, systemd units, rollback/backup/bootstrap scripts, runbook (README.md)
 Dockerfile              multi-stage: node build (native platform) -> python:3.12-slim (linux/arm64)

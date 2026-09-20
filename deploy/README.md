@@ -34,14 +34,21 @@ health-backup.timer ── 04:00 daily ── SQLite online backup → /data/bac
 
 ### 3. On the Pi (as your normal user)
 
+The repo is `alexander-analysis/bodyapp`; the image is public, so no `docker login`.
+
 ```bash
 sudo mkdir -p /opt/health && sudo chown "$USER" /opt/health
-git clone https://github.com/<user>/<repo>.git /opt/health/src
+git clone https://github.com/alexander-analysis/bodyapp.git /opt/health/src
 cp /opt/health/src/.env.example /opt/health/.env
 chmod 600 /opt/health/.env
-nano /opt/health/.env          # GEMINI_API_KEY, API_BEARER_TOKEN (openssl rand -hex 32), GHCR_IMAGE, TS_HOSTNAME
+nano /opt/health/.env          # API_BEARER_TOKEN (openssl rand -hex 32), GHCR_IMAGE, TS_HOSTNAME; GEMINI_API_KEY optional
 bash /opt/health/src/deploy/bootstrap.sh
 ```
+
+`bootstrap.sh` prints a Tailscale login URL on a fresh Pi — open it and sign in;
+the script continues once the Pi has joined the tailnet. Afterwards, from the
+app's Settings page, press **Import / refresh now** once to load the Open Food
+Facts mirror (or wait for the monthly job on the 1st).
 
 `bootstrap.sh` is idempotent: installs Docker and Tailscale if missing, creates
 `/mnt/storage/health/{photos,backups}`, copies the runtime files to
@@ -115,3 +122,10 @@ Then the integration checks from spec §16:
 - The Watchtower service bind-mounts `$HOME/.docker/config.json`; bootstrap
   creates it (`{}`) if missing, because Docker would otherwise create a
   *directory* at that path.
+- **Gemini key is optional.** Without it the app runs with photo/text logging,
+  narratives, `/ask` and physique analysis disabled (loudly: `/health` shows
+  it). Add `GEMINI_API_KEY=` to `/opt/health/.env` and `docker compose up -d api`
+  to enable them.
+- **First OFF import** streams ~1.3 GB and takes a while on a Pi 5; it commits
+  every 2000 rows, so it can be interrupted and resumed. Roughly 400k products
+  for ES/NL/DE/CZ.
