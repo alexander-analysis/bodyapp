@@ -163,3 +163,14 @@ def test_logging_gap_ignores_event_days():
 
 def test_scope_statement_exists_for_the_ui():
     assert "not a clinician" in guards.SCOPE_STATEMENT
+
+
+def test_logging_gap_ignores_days_before_the_first_logged_day():
+    start = TODAY - timedelta(days=20)
+    # the user started logging 3 days ago: the 17 empty days before are not a gap
+    rows = [DayRow(TODAY - timedelta(days=i), kcal=2000.0) for i in range(3)]
+    assert not guards.has_logging_gap(rows, start, TODAY)
+    assert not guards.has_logging_gap([], start, TODAY)
+    # but a real 4-day hole after they started is
+    rows = [DayRow(TODAY - timedelta(days=i), kcal=2000.0) for i in (0, 5, 6)]
+    assert guards.has_logging_gap(rows, start, TODAY)

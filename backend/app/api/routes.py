@@ -291,6 +291,13 @@ def volume_weekly(conn: sqlite3.Connection = Depends(get_conn), day: date = Depe
     return services.weekly_volume(conn, today=day)
 
 
+# --- summary -------------------------------------------------------------------
+
+@router.get("/summary/weekly")
+def summary_weekly(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+    return services.weekly_summary(conn, today=day)
+
+
 # --- export --------------------------------------------------------------------
 
 @router.get("/export")

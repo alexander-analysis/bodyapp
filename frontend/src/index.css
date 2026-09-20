@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0f1115;
+  --color-panel: #171a21;
+  --color-panel-2: #1f232c;
+  --color-line: #2a2f3a;
+  --color-ink: #e6e6e6;
+  --color-muted: #9aa3b2;
+  --color-accent: #34d399;
+  --color-accent-2: #60a5fa;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+body {
+  padding-top: env(safe-area-inset-top);
+}
+
+input,
+select,
+textarea {
+  background: var(--color-panel-2);
+  color: var(--color-ink);
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 16px; /* prevents iOS zoom on focus */
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-xl px-4 py-3 text-base font-medium select-none active:scale-[0.98] transition disabled:opacity-40;
+}
+.btn-primary {
+  @apply bg-accent text-black;
+}
+.btn-ghost {
+  @apply bg-panel-2 text-ink border border-line;
+}
+.btn-danger {
+  @apply bg-danger/15 text-danger border border-danger/30;
+}
+.card {
+  @apply bg-panel rounded-2xl p-4 border border-line;
+}
+.label {
+  @apply text-xs uppercase tracking-wide text-muted;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

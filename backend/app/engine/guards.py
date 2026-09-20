@@ -109,8 +109,13 @@ def has_logging_gap(days: Sequence[DayRow], start: date, end: date, events: Sequ
     [start, end] have no intake logged at all (absent row or zero kcal).
 
     Days covered by a health event are *excluded*, not unlogged: they are
-    transparent here, neither extending nor resetting the run."""
+    transparent here, neither extending nor resetting the run. Days before the
+    first logged day are "before the app", not a gap."""
     by_day = {d.day: d for d in days}
+    logged_days = [d.day for d in days if not d.is_unlogged]
+    if not logged_days:
+        return False
+    start = max(start, min(logged_days))
     run = 0
     cur = start
     while cur <= end:

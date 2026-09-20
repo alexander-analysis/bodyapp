@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import store
 from .engine import guards, modes, progression, rollup, targets, tdee, trend, validation, volume
+from .engine.trend import TrendPoint
 from .engine.types import Target
 
 
@@ -415,4 +416,40 @@ def today_payload(conn: sqlite3.Connection, *, today: date, gemini_enabled: bool
         "gemini_enabled": gemini_enabled,
         "scope": guards.SCOPE_STATEMENT,
         "version": version,
+    }
+
+
+# --- weekly summary ------------------------------------------------------------
+
+def weekly_summary(conn: sqlite3.Connection, *, today: date) -> dict:
+    """Structured stats for the last 7 days. The prose narrative is a milestone-8
+    Gemini job; it renders these numbers, it never computes them."""
+    start = today - timedelta(days=6)
+    target = store.current_target(conn, today)
+    days = store.rollup_days(conn, start, today)
+    adherence = rollup.weekly_adherence(days, target) if target else None
+    series = trend.trend_weight(store.weight_points(conn))
+    first = trend.trend_on_or_after(series, start)
+    last = trend.trend_on_or_before(series, today)
+    change = round(last.trend_kg - first.trend_kg, 2) if first and last and first.day < last.day else None
+    est = tdee_estimate(conn, today)
+    vol = weekly_volume(conn, today=today)
+    events = [e for e in store.list_events(conn) if (e.ended_at or today) >= start]
+    targets_this_week = [t for t in store.list_targets(conn) if date.fromisoformat(t["effective_from"]) >= start]
+    return {
+        "week": {"start": start.isoformat(), "end": today.isoformat()},
+        "target": asdict(target) | {"effective_from": target.effective_from.isoformat()} if target else None,
+        "adherence": asdict(adherence) if adherence else None,
+        "days_logged": sum(1 for d in days if not d.is_unlogged),
+        "days_excluded": sum(1 for d in days if d.health_event_id is not None),
+        "trend": {"start_kg": round(first.trend_kg, 2) if first else None, "end_kg": round(last.trend_kg, 2) if last else None,
+                  "change_kg": change,
+                  "rate_pct_week": round(trend.rate_pct_per_week(first, last), 2) if first and last and first.day < last.day else None},
+        "tdee": {"tdee_kcal": est.tdee_kcal, "method": est.method, "confidence": est.confidence, "notes": list(est.notes)} if est else None,
+        "volume": vol,
+        "events": [{"id": e.id, "type": e.type, "severity": e.severity, "started_at": e.started_at.isoformat(),
+                    "ended_at": e.ended_at.isoformat() if e.ended_at else None} for e in events],
+        "target_changes": targets_this_week,
+        "estimates_flagged": bool(adherence and adherence.mean_confidence is not None and adherence.mean_confidence < 0.6),
+        "narrative": None,
     }

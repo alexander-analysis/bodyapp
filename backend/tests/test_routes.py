@@ -260,3 +260,14 @@ def test_export_is_a_zip_of_csvs(client):
 def test_all_routes_require_the_token(client):
     for method, path in (("get", "/api/v1/today"), ("post", "/api/v1/weight"), ("get", "/api/v1/export"), ("put", "/api/v1/profile")):
         assert getattr(client, method)(path).status_code == 401
+
+
+def test_weekly_summary_has_the_numbers_and_no_narrative_yet(client):
+    client.post("/api/v1/food/entry", json={"meal": "lunch", "grams": 150, "food": CHICKEN}, headers=H)
+    r = client.get("/api/v1/summary/weekly", headers=H)
+    assert r.status_code == 200
+    s = r.json()
+    assert s["narrative"] is None and s["target"]["phase"] == "cut"
+    assert s["days_logged"] == 1 and s["tdee"]["method"] == "formula"
+    assert s["adherence"]["days_considered"] == 0  # one entry is not a logged-complete day
+    assert s["volume"]["window_days"] == 7 and s["events"] == []
