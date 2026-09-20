@@ -24,7 +24,7 @@ def test_health_is_public_and_reports_schema(client):
     r = client.get("/api/v1/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "ok" and body["db"] == "ok" and body["schema"] == "0001"
+    assert body["status"] == "ok" and body["db"] == "ok" and body["schema"] == "0002"
     assert body["backup_newest_age_h"] is None
     assert "version" in body
 
@@ -37,11 +37,12 @@ def test_health_reports_backup_freshness(client, tmp_path):
 
 
 def test_other_api_routes_require_the_bearer_token(client):
-    assert client.get("/api/v1/targets").status_code == 401
-    assert client.get("/api/v1/targets", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert client.get("/api/v1/targets", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
-    # right token: past the middleware (404 because the route does not exist yet)
-    assert client.get("/api/v1/targets", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 404
+    assert client.get("/api/v1/nope").status_code == 401
+    assert client.get("/api/v1/nope", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/api/v1/nope", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
+    # right token: past the middleware (404 because that route does not exist)
+    assert client.get("/api/v1/nope", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 404
+    assert client.get("/api/v1/targets", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
 
 
 def test_blank_gemini_key_means_disabled_and_short_token_is_refused():

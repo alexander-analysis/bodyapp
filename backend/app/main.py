@@ -14,10 +14,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
-from . import db, migrate
+from . import db, migrate, scheduler, store
+from .api.routes import router as api_router
 from .config import API_PREFIX, Settings, get_settings
 from .engine.guards import SCOPE_STATEMENT
 
@@ -26,6 +28,24 @@ log = logging.getLogger("health")
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/srv/www"))
 PUBLIC_PATHS = {f"{API_PREFIX}/health"}
+MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _idempotent_lookup(cfg: Settings, key: str) -> dict | None:
+    conn = db.connect(cfg.db_path)
+    try:
+        return store.get_idempotent(conn, key)
+    finally:
+        conn.close()
+
+
+def _idempotent_store(cfg: Settings, key: str, route: str, status: int, body: str) -> None:
+    conn = db.connect(cfg.db_path)
+    try:
+        with db.transaction(conn):
+            store.put_idempotent(conn, key=key, route=route, status_code=status, body=body)
+    finally:
+        conn.close()
 
 
 @asynccontextmanager
@@ -37,15 +57,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     migrate.upgrade(settings.db_url)
     if not settings.gemini_enabled:
         log.warning("GEMINI_API_KEY not set: photo/text identification, narratives and /ask are DISABLED; manual logging works")
-    log.info("started version=%s db=%s gemini=%s", APP_VERSION, settings.db_path,
-             settings.gemini_model if settings.gemini_enabled else "disabled")
-    yield
+    sched = scheduler.build(settings) if settings.scheduler_enabled else None
+    if sched:
+        sched.start()
+    log.info("started version=%s db=%s gemini=%s jobs=%s", APP_VERSION, settings.db_path,
+             settings.gemini_model if settings.gemini_enabled else "disabled", "on" if sched else "off")
+    try:
+        yield
+    finally:
+        if sched:
+            sched.shutdown(wait=False)
 
 
 def create_app(settings: Settings | None = None, static_dir: Path = STATIC_DIR) -> FastAPI:
     app = FastAPI(title="Health Platform", version=APP_VERSION, lifespan=lifespan, description=SCOPE_STATEMENT)
     cfg = settings or get_settings()
     app.state.settings = cfg
+    app.include_router(api_router)
+
+    @app.middleware("http")
+    async def idempotency(request: Request, call_next):  # noqa: ANN001, ANN202
+        """Mutating requests carrying an Idempotency-Key are replayed from the
+        stored response for 24 h (spec 10): the offline queue retries safely."""
+        key = request.headers.get("idempotency-key", "").strip()
+        path = request.url.path
+        if not key or len(key) > 128 or request.method not in MUTATING or not path.startswith(API_PREFIX):
+            return await call_next(request)
+        route = f"{request.method} {path}"
+        hit = await run_in_threadpool(_idempotent_lookup, cfg, key)
+        if hit and hit["route"] == route:
+            return Response(content=hit["response_json"], status_code=hit["status_code"], media_type="application/json",
+                            headers={"Idempotent-Replayed": "true"})
+        response = await call_next(request)
+        body = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[attr-defined]
+        if response.status_code < 500:
+            await run_in_threadpool(_idempotent_store, cfg, key, route, response.status_code, body.decode("utf-8", "replace"))
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+        return Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
 
     @app.middleware("http")
     async def bearer_auth(request: Request, call_next):  # noqa: ANN001, ANN202

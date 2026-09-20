@@ -7,7 +7,7 @@ from app import db, migrate
 
 EXPECTED_TABLES = {
     "users", "health_events", "weight_logs", "foods", "food_entries", "workouts", "exercises",
-    "exercise_sets", "targets", "daily_rollup", "tdee_estimates", "llm_calls", "favorites", "idempotency_keys",
+    "exercise_sets", "targets", "daily_rollup", "tdee_estimates", "llm_calls", "favorites", "idempotency_keys", "templates",
 }
 LOG_TABLES_WITH_EVENT_FK = {"weight_logs", "food_entries", "workouts", "daily_rollup"}
 
@@ -30,7 +30,7 @@ def columns(conn: sqlite3.Connection, table: str) -> dict[str, dict]:
 def test_upgrade_creates_every_table_and_records_the_revision(migrated):
     conn = db.connect(migrated)
     assert EXPECTED_TABLES <= tables(conn)
-    assert db.schema_version(conn) == "0001"
+    assert db.schema_version(conn) == "0002"
     conn.close()
 
 
@@ -68,7 +68,7 @@ def test_pragmas_and_fk_enforcement(migrated):
 def test_set_cascade_on_workout_delete(migrated):
     conn = db.connect(migrated)
     conn.execute("INSERT INTO users (id, name, sex, birth_date, height_cm) VALUES (1, 'a', 'm', '2002-03-15', 180)")
-    conn.execute("INSERT INTO exercises (id, name, muscle_group) VALUES (1, 'Squat', 'quads')")
+    assert conn.execute("SELECT COUNT(*) FROM exercises").fetchone()[0] == 22  # seeded by 0002
     conn.execute("INSERT INTO workouts (id, user_id, performed_on) VALUES (1, 1, '2026-06-01')")
     conn.execute("INSERT INTO exercise_sets (workout_id, exercise_id, set_index, weight_kg, reps) VALUES (1, 1, 1, 100, 8)")
     conn.execute("DELETE FROM workouts WHERE id = 1")

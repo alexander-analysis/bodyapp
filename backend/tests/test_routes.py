@@ -1,0 +1,262 @@
+"""API layer: routes, transactions, idempotency, rails on writes, tagging."""
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+from app import db, store
+from app.config import Settings
+from app.engine import guards
+from app.main import create_app
+
+TOKEN = "0123456789abcdef0123456789abcdef"
+H = {"Authorization": f"Bearer {TOKEN}"}
+PROFILE = {"name": "Alex", "sex": "m", "birth_date": "2002-03-15", "height_cm": 180, "goal_weight_kg": 76,
+           "start_weight_kg": 82, "phase": "cut"}
+CHICKEN = {"name": "Chicken breast", "kcal_100g": 165, "protein_100g": 31, "carbs_100g": 0, "fat_100g": 3.6}
+
+
+@pytest.fixture
+def app_env(tmp_path: Path):
+    settings = Settings(
+        gemini_api_key=None, api_bearer_token=SecretStr(TOKEN), data_dir=tmp_path, db_path=tmp_path / "health.db",
+        photo_dir=tmp_path / "p", backup_dir=tmp_path / "b", scheduler_enabled=False,
+    )
+    with TestClient(create_app(settings, static_dir=tmp_path / "nowhere")) as c:
+        yield c, settings
+
+
+@pytest.fixture
+def client(app_env):
+    c, _ = app_env
+    assert c.put("/api/v1/profile", json=PROFILE, headers=H).status_code == 200
+    return c
+
+
+def today_iso(app_env) -> str:
+    from app import services
+
+    return services.today_local(app_env[1].tz).isoformat()
+
+
+# --- profile and targets -------------------------------------------------------
+
+def test_profile_creates_a_formula_based_initial_target(app_env):
+    c, _ = app_env
+    assert c.get("/api/v1/today", headers=H).json()["target"] is None
+    r = c.put("/api/v1/profile", json=PROFILE, headers=H)
+    assert r.status_code == 200
+    t = r.json()["target"]
+    assert t["set_by"] == "engine" and t["phase"] == "cut"
+    assert "Mifflin" in t["reason"] and guards.RAIL_FAT_FLOOR in t["reason"]  # 0.8 g/kg x 82 = 66 -> clamped to 80
+    assert t["kcal"] >= guards.KCAL_FLOOR and t["protein_g"] >= guards.PROTEIN_FLOOR_G and t["fat_g_min"] == guards.FAT_FLOOR_G
+    # saving the profile again does not create a second target
+    c.put("/api/v1/profile", json={**PROFILE, "name": "Alexander"}, headers=H)
+    assert len(c.get("/api/v1/targets", headers=H).json()["history"]) == 1
+    assert c.get("/api/v1/profile", headers=H).json()["profile"]["name"] == "Alexander"
+
+
+def test_override_goes_through_the_rails(client):
+    r = client.post("/api/v1/targets/override", json={"kcal": 1500, "reason": "trying"}, headers=H)
+    assert r.status_code == 201
+    assert r.json()["kcal"] == guards.KCAL_FLOOR and r.json()["set_by"] == "user"
+    assert guards.RAIL_KCAL_FLOOR in r.json()["reason"] and r.json()["rails_tripped"] == [guards.RAIL_KCAL_FLOOR]
+    assert client.post("/api/v1/targets/override", json={"reason": "nothing"}, headers=H).status_code == 422
+    hist = client.get("/api/v1/targets", headers=H).json()
+    assert hist["current"]["kcal"] == guards.KCAL_FLOOR and len(hist["history"]) == 2
+
+
+# --- weight --------------------------------------------------------------------
+
+def test_weight_upsert_trend_and_delete(client, app_env):
+    today = date.fromisoformat(today_iso(app_env))
+    for i, kg in enumerate((82.0, 81.8, 81.9, 81.5, 81.6, 81.4, 81.3, 81.2)):
+        d = today - timedelta(days=7 - i)
+        assert client.post("/api/v1/weight", json={"day": d.isoformat(), "weight_kg": kg}, headers=H).status_code == 201
+    # same day again replaces, never duplicates
+    client.post("/api/v1/weight", json={"weight_kg": 81.0, "waist_cm": 84}, headers=H)
+    trend = client.get("/api/v1/weight/trend?days=30", headers=H).json()
+    assert len(trend["points"]) == 8
+    assert trend["latest"]["weight_kg"] == 81.0 and trend["latest"]["waist_cm"] == 84
+    assert trend["trend_kg"] is not None and trend["rate_pct_week"] is not None
+    assert client.delete(f"/api/v1/weight/{today.isoformat()}", headers=H).status_code == 200
+    assert client.delete(f"/api/v1/weight/{today.isoformat()}", headers=H).status_code == 404
+    assert len(client.get("/api/v1/weight/trend?days=30", headers=H).json()["points"]) == 7
+
+
+# --- food ----------------------------------------------------------------------
+
+def test_inline_food_is_saved_scaled_and_searchable(client):
+    r = client.post("/api/v1/food/entry", json={"meal": "lunch", "grams": 150, "food": CHICKEN}, headers=H)
+    assert r.status_code == 201
+    e = r.json()
+    assert e["kcal"] == 247.5 and e["protein_g"] == 46.5 and e["food_id"] is not None and e["input_method"] == "manual"
+    assert e["confidence"] == 1.0 and e["health_event_id"] is None
+    found = client.get("/api/v1/food/search?q=chicken", headers=H).json()["results"]
+    assert [f["name"] for f in found] == ["Chicken breast"] and found[0]["source"] == "user"
+    # log the saved food by id
+    r = client.post("/api/v1/food/entry", json={"meal": "dinner", "grams": 200, "food_id": e["food_id"]}, headers=H)
+    assert r.status_code == 201 and r.json()["kcal"] == 330.0
+    today = client.get("/api/v1/today", headers=H).json()
+    assert today["consumed"]["kcal"] == 577.5 and len(today["entries"]) == 2
+    assert today["remaining"]["kcal"] == round(today["target"]["kcal"] - 577.5)
+
+
+def test_macro_inconsistent_food_is_rejected(client):
+    bad = {"name": "Mystery", "kcal_100g": 500, "protein_100g": 5, "carbs_100g": 5, "fat_100g": 5}
+    r = client.post("/api/v1/food/entry", json={"grams": 100, "food": bad}, headers=H)
+    assert r.status_code == 422 and "macro inconsistency" in r.json()["detail"]
+    assert client.get("/api/v1/food/search?q=mystery", headers=H).json()["results"] == []
+
+
+def test_manual_macros_entry_and_delete(client):
+    r = client.post("/api/v1/food/entry", json={"grams": 300, "macros": {"kcal": 600, "protein_g": 30, "carbs_g": 60, "fat_g": 20}}, headers=H)
+    assert r.status_code == 201
+    eid = r.json()["id"]
+    assert client.get("/api/v1/today", headers=H).json()["consumed"]["kcal"] == 600.0
+    assert client.delete(f"/api/v1/food/entry/{eid}", headers=H).status_code == 200
+    assert client.delete(f"/api/v1/food/entry/{eid}", headers=H).status_code == 404
+    assert client.get("/api/v1/today", headers=H).json()["consumed"]["kcal"] == 0.0
+
+
+def test_entry_needs_exactly_one_nutrition_source(client):
+    assert client.post("/api/v1/food/entry", json={"grams": 100}, headers=H).status_code == 422
+    assert client.post("/api/v1/food/entry", json={"grams": 100, "food_id": 999}, headers=H).status_code == 404
+
+
+def test_favorites_round_trip_and_suggestions(client, app_env):
+    fid = client.post("/api/v1/food/entry", json={"grams": 150, "food": CHICKEN}, headers=H).json()["food_id"]
+    r = client.post("/api/v1/food/favorites", json={"label": "Chicken lunch", "items": [{"food_id": fid, "grams": 150}]}, headers=H)
+    assert r.status_code == 201
+    fav_id = r.json()["id"]
+    r = client.post(f"/api/v1/food/favorites/{fav_id}/log", json={"meal": "lunch", "scale": 2}, headers=H)
+    assert r.status_code == 201 and r.json()["entries"][0]["grams"] == 300 and r.json()["entries"][0]["input_method"] == "favorite"
+    assert r.json()["entries"][0]["confidence"] == 0.9
+    favs = client.get("/api/v1/food/favorites", headers=H).json()
+    assert favs["favorites"][0]["use_count"] == 1 and favs["suggestions"] == []  # already a favorite: not suggested
+    # a food logged three times at a similar portion, not yet a favorite, is suggested
+    other = client.post("/api/v1/food/entry", json={"grams": 100, "food": {"name": "Oats", "kcal_100g": 379, "protein_100g": 13, "carbs_100g": 68, "fat_100g": 7}}, headers=H).json()["food_id"]
+    for g in (100, 95, 108):
+        client.post("/api/v1/food/entry", json={"grams": g, "food_id": other}, headers=H)
+    sugg = client.get("/api/v1/food/favorites", headers=H).json()["suggestions"]
+    assert sugg and sugg[0]["food_id"] == other and sugg[0]["times"] == 4
+    assert client.delete(f"/api/v1/food/favorites/{fav_id}", headers=H).status_code == 200
+
+
+def test_barcode_lookup_is_local_only_for_now(client):
+    r = client.post("/api/v1/food/barcode", json={"barcode": "5449000000996"}, headers=H)
+    assert r.status_code == 200 and r.json()["food"] is None
+
+
+# --- idempotency ---------------------------------------------------------------
+
+def test_same_idempotency_key_writes_once(client):
+    body = {"meal": "lunch", "grams": 150, "food": CHICKEN}
+    h = {**H, "Idempotency-Key": "11111111-1111-4111-8111-111111111111"}
+    a = client.post("/api/v1/food/entry", json=body, headers=h)
+    b = client.post("/api/v1/food/entry", json=body, headers=h)
+    assert a.status_code == b.status_code == 201
+    assert a.json()["id"] == b.json()["id"]
+    assert b.headers.get("idempotent-replayed") == "true" and a.headers.get("idempotent-replayed") is None
+    assert len(client.get("/api/v1/today", headers=H).json()["entries"]) == 1
+    # a different key writes again; the same key on a different route is not replayed
+    c = client.post("/api/v1/food/entry", json=body, headers={**H, "Idempotency-Key": "other"})
+    assert c.status_code == 201 and c.json()["id"] != a.json()["id"]
+    w = client.post("/api/v1/weight", json={"weight_kg": 80}, headers=h)
+    assert w.status_code == 201 and "weight_kg" in w.json()
+
+
+def test_idempotent_replay_of_a_client_error(client):
+    h = {**H, "Idempotency-Key": "bad-1"}
+    a = client.post("/api/v1/food/entry", json={"grams": 100}, headers=h)
+    b = client.post("/api/v1/food/entry", json={"grams": 100}, headers=h)
+    assert a.status_code == b.status_code == 422 and b.headers.get("idempotent-replayed") == "true"
+
+
+# --- training ------------------------------------------------------------------
+
+def test_next_session_rotates_templates_and_prescribes(client):
+    first = client.get("/api/v1/workout/next", headers=H).json()
+    assert first["template"] == "Upper A" and not first["blocked"]
+    bench = next(x for x in first["exercises"] if x["exercise"]["name"] == "Bench press")
+    assert bench["weight_kg"] is None and bench["sets"] == 3
+    r = client.post("/api/v1/workout", json={"template": "Upper A", "sets": [
+        {"exercise_id": 2, "weight_kg": 60, "reps": 10, "rir": 1}, {"exercise_id": 2, "weight_kg": 60, "reps": 10, "rir": 1},
+        {"exercise_id": 2, "weight_kg": 60, "reps": 10, "rir": 1}]}, headers=H)
+    assert r.status_code == 201 and len(r.json()["sets"]) == 3
+    assert client.get("/api/v1/workout/next", headers=H).json()["template"] == "Lower A"
+    upper = client.get("/api/v1/workout/next?template=Upper A", headers=H).json()
+    bench = next(x for x in upper["exercises"] if x["exercise"]["name"] == "Bench press")
+    assert bench["weight_kg"] == 62.5 and bench["target_reps"] == 6  # rep_max 10 hit with RIR 1: +2.5 kg, reset to rep_min
+    hist = client.get("/api/v1/workout/history/2", headers=H).json()
+    assert hist["e1rm_trend"][0]["e1rm"] == 80.0 and hist["sessions"][0]["working_sets"] == 3
+    vol = client.get("/api/v1/volume/weekly", headers=H).json()
+    assert {g["muscle_group"]: g["sets"] for g in vol["groups"]} == {"chest": 3.0, "triceps": 1.5, "front_delts": 1.5}
+    assert client.get("/api/v1/workout/next?template=Nope", headers=H).status_code == 404
+    assert client.post("/api/v1/workout", json={"sets": [{"exercise_id": 999, "weight_kg": 1, "reps": 1}]}, headers=H).status_code == 404
+    recent = client.get("/api/v1/workout/recent", headers=H).json()["workouts"]
+    assert len(recent) == 1 and client.delete(f"/api/v1/workout/{recent[0]['id']}", headers=H).status_code == 200
+
+
+def test_exercises_and_templates_are_editable(client):
+    ex = client.get("/api/v1/exercises", headers=H).json()
+    assert len(ex["exercises"]) == 22 and [t["name"] for t in ex["templates"]] == ["Upper A", "Lower A", "Upper B", "Lower B"]
+    r = client.post("/api/v1/exercises", json={"name": "Dip", "muscle_group": "chest", "secondary_groups": ["triceps"]}, headers=H)
+    assert r.status_code == 201 and r.json()["secondary_groups"] == "triceps"
+    assert client.post("/api/v1/exercises", json={"name": "Dip", "muscle_group": "chest"}, headers=H).status_code == 409
+    assert client.patch(f"/api/v1/exercises/{r.json()['id']}", json={"increment_kg": 5}, headers=H).json()["increment_kg"] == 5
+    t = client.put("/api/v1/templates", json={"name": "Push", "slot": 5, "exercises": [{"exercise_id": 2, "sets": 4}]}, headers=H)
+    assert t.status_code == 200 and t.json()["exercises"] == [{"exercise_id": 2, "sets": 4}]
+
+
+# --- tagging, day metrics, export -----------------------------------------------
+
+def test_rows_logged_during_an_event_are_tagged(client, app_env):
+    _, settings = app_env
+    today = date.fromisoformat(today_iso(app_env))
+    # a clean weigh-in yesterday; the profile's start weight sits on today and is replaced below
+    client.post("/api/v1/weight", json={"day": (today - timedelta(days=1)).isoformat(), "weight_kg": 82.0}, headers=H)
+    conn = db.connect(settings.db_path)
+    with db.transaction(conn):
+        ev = store.insert_event(conn, type="illness", severity="mild", fever_flag=False, symptoms=None, started_at=today,
+                                ended_at=None, ramp_until=None, created_by="user", notes=None)
+    conn.close()
+    w = client.post("/api/v1/weight", json={"weight_kg": 79.0}, headers=H).json()
+    e = client.post("/api/v1/food/entry", json={"grams": 100, "food": CHICKEN}, headers=H).json()
+    k = client.post("/api/v1/workout", json={"sets": [{"exercise_id": 1, "weight_kg": 80, "reps": 5}]}, headers=H).json()
+    assert w["health_event_id"] == e["health_event_id"] == k["health_event_id"] == ev["id"]
+    today_payload = client.get("/api/v1/today", headers=H).json()
+    assert today_payload["mode"]["names"] == ["illness:mild"] and today_payload["mode"]["force_maintenance"]
+    assert today_payload["next_session"]["exercises"][0]["sets"] <= 2  # volume cap 0.5 on 3 sets
+    # the sick weigh-in is excluded from the trend, and the override rail forces maintenance
+    trend = client.get("/api/v1/weight/trend", headers=H).json()
+    assert [p["excluded"] for p in trend["points"]] == [False, True]
+    r = client.post("/api/v1/targets/override", json={"kcal": 1800, "phase": "cut", "reason": "x"}, headers=H)
+    assert r.status_code == 201 and r.json()["phase"] == "maintain" and guards.RAIL_ILLNESS_NO_DEFICIT in r.json()["reason"]
+
+
+def test_day_metrics_and_rollup(client, app_env):
+    today = today_iso(app_env)
+    client.post("/api/v1/food/entry", json={"meal": "breakfast", "grams": 100, "food": CHICKEN}, headers=H)
+    r = client.patch(f"/api/v1/day/{today}", json={"steps": 8000, "water_ml": 1500}, headers=H)
+    assert r.status_code == 200 and r.json()["steps"] == 8000 and r.json()["kcal"] == 165.0 and r.json()["water_ml"] == 1500
+    payload = client.get("/api/v1/today", headers=H).json()
+    assert payload["day_metrics"] == {"steps": 8000, "water_ml": 1500, "sleep_h": None, "logged_complete": False}
+    assert payload["tdee"]["method"] == "formula"
+
+
+def test_export_is_a_zip_of_csvs(client):
+    import io
+    import zipfile
+
+    r = client.get("/api/v1/export", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert {"users.csv", "targets.csv", "weight_logs.csv", "food_entries.csv", "foods.csv", "exercises.csv"} <= set(names)
+
+
+def test_all_routes_require_the_token(client):
+    for method, path in (("get", "/api/v1/today"), ("post", "/api/v1/weight"), ("get", "/api/v1/export"), ("put", "/api/v1/profile")):
+        assert getattr(client, method)(path).status_code == 401

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     backup_dir: Path = Path("/data/backups")
     tz: str = "Europe/Madrid"
     log_level: str = "INFO"
+    scheduler_enabled: bool = True  # tests turn the in-process jobs off
 
     @field_validator("gemini_api_key", mode="before")
     @classmethod
