@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { StillUnwellPrompt } from "../components/Modes";
 import { Bar } from "../components/Sheet";
 import { deleteEntry, logWeight, patchDay } from "../lib/actions";
 import { describeError } from "../lib/api";
@@ -33,6 +34,7 @@ export function Today() {
       </div>
 
       {t.mode.names.length > 0 && <ModeCard t={t} />}
+      <StillUnwellPrompt />
       {t.llm && (t.llm.cap_reached || (t.llm.calls_24h >= 3 && t.llm.error_rate_24h >= 0.5)) && (
         <div className="card border-warn/40 text-sm text-warn">
           {t.llm.cap_reached ? `Gemini daily cap reached (${t.llm.cap} calls) — photo and text logging are off until tomorrow; barcode, search and manual still work.` : `Gemini has been failing (${Math.round(t.llm.error_rate_24h * 100)}% of calls in 24 h). Manual logging keeps working.`}
@@ -109,7 +111,7 @@ function ModeCard({ t }: { t: TodayPayload }) {
   return (
     <div className="card border-warn/40 text-sm space-y-1">
       <div className="font-medium text-warn">{m.names.join(" · ")}</div>
-      {m.force_maintenance && <div className="text-muted">Targets held at maintenance — no deficit while unwell.</div>}
+      {m.force_maintenance && <div className="text-muted">{t.target?.held_reason ?? "Targets held at maintenance — no deficit while unwell."}</div>}
       {m.training === "blocked" && <div className="text-muted">Training is off. Rest.</div>}
       {m.training === "reduced" && <div className="text-muted">Training reduced: volume ×{m.volume_cap.toFixed(2)}, previous loads, no progression.</div>}
       {m.guidance.includes("above_the_neck") && <div className="text-muted">Above-the-neck symptoms only: a light session is fine if you feel up to it.</div>}

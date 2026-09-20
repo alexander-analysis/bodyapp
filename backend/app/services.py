@@ -368,6 +368,97 @@ def weekly_volume(conn: sqlite3.Connection, *, today: date) -> dict:
 
 # --- today ---------------------------------------------------------------------
 
+def effective_target(stored: dict, state: modes.ModeState, maintenance_kcal: float | None) -> dict:
+    """What the user acts on today. During an illness or its return ramp the
+    stored target is *held* at maintenance (x the mode's multiplier) at read time;
+    no targets row is written, so the cut resumes by itself when the mode ends."""
+    r = state.rules
+    if not r.force_maintenance:
+        return dict(stored) | {"held": False}
+    maint = maintenance_kcal if maintenance_kcal else stored["kcal"]
+    kcal = max(stored["kcal"], int(round(maint * r.kcal_multiplier)))
+    why = state.names[0] if state.names else "mode"
+    out = dict(stored) | {
+        "kcal": kcal, "phase": "maintain", "held": True, "held_by": list(state.names), "stored_kcal": stored["kcal"],
+        "stored_phase": stored["phase"],
+        "held_reason": f"{why}: held at maintenance{' +5%' if r.kcal_multiplier > 1 else ''} ({kcal} kcal); the {stored['phase']} resumes when the mode ends",
+    }
+    if r.fibre_relaxed:
+        out["fibre_g"] = min(stored["fibre_g"], 15)
+    return out
+
+
+def start_event(conn: sqlite3.Connection, *, today: date, type: str, severity: str, fever_flag: bool, symptoms: dict | None,
+                started_at: date | None, notes: str | None, created_by: str = "user") -> dict:
+    start = started_at or today
+    if start > today:
+        raise Invalid("an event cannot start in the future")
+    if type != "illness":
+        severity = "none"
+    for e in store.list_events(conn):
+        if e.type == type and e.is_active_on(today):
+            raise Invalid(f"an active {type} event already exists (id {e.id}); end it first")
+    row = store.insert_event(conn, type=type, severity=severity, fever_flag=fever_flag, symptoms=symptoms, started_at=start,
+                             ended_at=None, ramp_until=None, created_by=created_by, notes=notes)
+    row["retagged"] = store.retag_rows(conn, row["id"], start, today)
+    refresh_trend(conn)
+    return row
+
+
+def update_event(conn: sqlite3.Connection, event_id: int, *, today: date, severity: str | None = None, fever_flag: bool | None = None,
+                 symptoms: dict | None = None, notes: str | None = None, ended_at: date | None = None, end_now: bool = False) -> dict:
+    current = store.get_event(conn, event_id)
+    if current is None:
+        raise NotFound(f"event {event_id}")
+    fields: dict = {}
+    if severity is not None and current["type"] == "illness":
+        fields["severity"] = severity
+    if fever_flag is not None:
+        fields["fever_flag"] = int(fever_flag)
+    if symptoms is not None:
+        import json as _json
+
+        fields["symptoms_json"] = _json.dumps(symptoms)
+    if notes is not None:
+        fields["notes"] = notes
+    if end_now or ended_at is not None:
+        started = date.fromisoformat(current["started_at"])
+        # "recovered now": yesterday was the last sick day; a same-day event stays active until midnight
+        end = ended_at if ended_at is not None else max(started, today - timedelta(days=1))
+        if end < started:
+            raise Invalid("ended_at is before started_at")
+        if end > today:
+            raise Invalid("an event cannot end in the future")
+        fields["ended_at"] = end.isoformat()
+        ev = store._event(dict(current) | {"ended_at": end.isoformat()})
+        ramp = modes.ramp_until(ev)
+        fields["ramp_until"] = ramp.isoformat() if ramp else None
+        # rows logged after the (possibly earlier) end date are clean again
+        if end < today:
+            store.retag_rows(conn, None, end + timedelta(days=1), today, only_untagged=False, from_event_id=event_id)
+    row = store.update_event(conn, event_id, **fields)
+    refresh_trend(conn)
+    return row  # type: ignore[return-value]
+
+
+def active_modes(conn: sqlite3.Connection, *, today: date) -> dict:
+    state = modes.resolve(store.list_events(conn), today)
+    return {
+        "active": [_event_row(conn, e.id) for e in state.active],
+        "ramping": [_event_row(conn, e.id) | {"ramp_until": e.ramp_until.isoformat() if e.ramp_until else None} for e in state.ramping],
+        "mode": _mode_payload(state),
+        "referrals": [e.id for e in state.referrals],
+    }
+
+
+def _event_row(conn: sqlite3.Connection, event_id: int) -> dict:
+    row = store.get_event(conn, event_id) or {}
+    import json as _json
+
+    row["symptoms"] = _json.loads(row.pop("symptoms_json") or "{}") if "symptoms_json" in row else {}
+    return row
+
+
 def _mode_payload(state: modes.ModeState) -> dict:
     r = state.rules
     return {
@@ -407,6 +498,15 @@ def today_payload(conn: sqlite3.Connection, *, today: date, gemini_enabled: bool
     metrics = store.get_rollup(conn, today) or {}
     est = tdee_estimate(conn, today) if user else None
     state = modes.resolve(store.list_events(conn), today)
+    if target_row:
+        target_row = effective_target(target_row, state, est.tdee_kcal if est else None)
+    if target_row and target_row.get("held"):
+        remaining = {
+            "kcal": round(target_row["kcal"] - consumed["kcal"]),
+            "protein_g": round(target_row["protein_g"] - consumed["protein_g"]),
+            "fat_g": round(target_row["fat_g_min"] - consumed["fat_g"]),
+            "fibre_g": round(target_row["fibre_g"] - consumed["fibre_g"]),
+        }
     series = trend.trend_weight(store.weight_points(conn)) if user else []
     clean = [p for p in series if not p.excluded]
     latest = store.latest_weight(conn)

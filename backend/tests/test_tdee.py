@@ -15,7 +15,7 @@ from app.engine.tdee import (
     mifflin_st_jeor,
 )
 from app.engine.trend import trend_weight
-from app.engine.types import DayRow, UserProfile
+from app.engine.types import DayRow, UserProfile, WeightPoint
 
 
 def test_mifflin_st_jeor_known_values():
@@ -167,3 +167,10 @@ def test_day_row_unlogged_property():
     assert DayRow(date(2026, 6, 1)).is_unlogged
     assert DayRow(date(2026, 6, 1), kcal=0.0).is_unlogged
     assert not DayRow(date(2026, 6, 1), kcal=1.0).is_unlogged
+
+
+def test_formula_uses_a_tagged_weight_when_no_clean_one_exists():
+    profile = UserProfile("m", date(2002, 3, 15), 180.0)
+    series = trend_weight([WeightPoint(date(2026, 6, 1), 80.0, health_event_id=1)])
+    est = estimate_tdee(profile=profile, days=[], trend=series, as_of=date(2026, 6, 1))
+    assert est.method == "formula" and est.formula_kcal == pytest.approx(formula_tdee(profile, 80.0, date(2026, 6, 1)), abs=0.1)

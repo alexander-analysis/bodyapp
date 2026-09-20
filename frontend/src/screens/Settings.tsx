@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ApiError, describeError, downloadExport, getToken, request, setToken } from "../lib/api";
 import { dayMonth, todayISO } from "../lib/format";
 import { useHealth, useReview, useTargets, useToday } from "../lib/hooks";
+import { ModesCard } from "../components/Modes";
 import { useInstall } from "../lib/install";
 import { discardFailed, retryFailed, usePending } from "../lib/outbox";
 import type { Phase, Profile, Target } from "../lib/types";
@@ -18,6 +19,7 @@ export function Settings() {
       <h1 className="text-lg font-semibold">More</h1>
       <Link to="/summary" className="card block"><div className="font-medium">Weekly summary →</div><div className="text-xs text-muted">Trend change, adherence, maintenance estimate, target changes.</div></Link>
       <ProfileCard />
+      <ModesCard />
       <TargetsCard />
       <EngineCard />
       <FoodDbCard />

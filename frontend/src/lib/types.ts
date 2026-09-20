@@ -15,6 +15,11 @@ export interface Target {
   reason: string;
   set_by: "engine" | "user";
   rails_tripped?: string[];
+  held?: boolean;
+  held_by?: string[];
+  held_reason?: string;
+  stored_kcal?: number;
+  stored_phase?: Phase;
 }
 
 export interface Profile {

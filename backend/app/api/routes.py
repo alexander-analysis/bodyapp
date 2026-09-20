@@ -20,6 +20,8 @@ from .deps import current_target_kcal, get_conn, get_settings_dep, get_today, ra
 from .schemas import (
     DayMetricsIn,
     EntryIn,
+    EventIn,
+    EventPatch,
     ExerciseIn,
     ExercisePatch,
     FavoriteIn,
@@ -330,6 +332,51 @@ def workout_history(exercise_id: int, conn: sqlite3.Connection = Depends(get_con
 @router.get("/volume/weekly")
 def volume_weekly(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
     return services.weekly_volume(conn, today=day)
+
+
+# --- modes (milestone 8) -------------------------------------------------------
+
+@router.get("/modes/active")
+def modes_active(conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+    return services.active_modes(conn, today=day)
+
+
+@router.get("/modes")
+def modes_history(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    rows = store.list_event_rows(conn)
+    for r in rows:
+        import json as _json
+
+        r["symptoms"] = _json.loads(r.pop("symptoms_json") or "{}")
+    return {"events": rows}
+
+
+@router.post("/modes", status_code=201)
+def modes_start(body: EventIn, conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+    try:
+        with db.transaction(conn):
+            return services.start_event(conn, today=day, **body.model_dump())
+    except (services.Invalid, services.NotFound) as exc:
+        raise raise_for(exc) from exc
+
+
+@router.patch("/modes/{event_id}")
+def modes_patch(event_id: int, body: EventPatch, conn: sqlite3.Connection = Depends(get_conn), day: date = Depends(get_today)) -> dict:
+    try:
+        with db.transaction(conn):
+            return services.update_event(conn, event_id, today=day, **body.model_dump())
+    except (services.Invalid, services.NotFound) as exc:
+        raise raise_for(exc) from exc
+
+
+@router.post("/modes/suggest")
+def modes_suggest(body: dict, conn: sqlite3.Connection = Depends(get_conn), settings: Settings = Depends(get_settings_dep),
+                  day: date = Depends(get_today)) -> dict:
+    text = str(body.get("text", "")).strip()
+    if not text or len(text) > 600:
+        raise HTTPException(422, "describe the symptoms in 1-600 characters")
+    with db.transaction(conn):
+        return llm_services.suggest_severity(conn, settings, text, today=day)
 
 
 # --- gemini paths (read-only: they return candidates, never write entries) -------

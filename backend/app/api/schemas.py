@@ -145,3 +145,21 @@ class DayMetricsIn(Body):
     water_ml: int | None = Field(default=None, ge=0, le=20000)
     sleep_h: float | None = Field(default=None, ge=0, le=24)
     logged_complete: bool | None = None
+
+
+class EventIn(Body):
+    type: Literal["illness", "injury", "travel", "exam"]
+    severity: Literal["mild", "moderate", "gi", "none"] = "none"
+    fever_flag: bool = False
+    symptoms: dict | None = None
+    started_at: date | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class EventPatch(Body):
+    severity: Literal["mild", "moderate", "gi", "none"] | None = None
+    fever_flag: bool | None = None
+    symptoms: dict | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+    ended_at: date | None = None
+    end_now: bool = False

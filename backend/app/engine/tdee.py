@@ -119,8 +119,11 @@ def estimate_tdee(
     t_start = trend_on_or_after(trend, window_start)
     current_weight = t_end.trend_kg if t_end is not None else None
     if current_weight is None:
-        raw = [p for p in trend if not p.excluded]
-        current_weight = raw[-1].raw_kg if raw else None
+        # No clean trend yet: the formula only needs a body weight, and a tagged
+        # weigh-in is still a body weight for Mifflin-St Jeor (never for the trend).
+        clean_raw = [p for p in trend if not p.excluded]
+        any_raw = list(trend)
+        current_weight = clean_raw[-1].raw_kg if clean_raw else (any_raw[-1].raw_kg if any_raw else None)
 
     notes: list[str] = []
     formula = formula_tdee(profile, current_weight, as_of) if current_weight else 0.0

@@ -662,3 +662,21 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 def all_settings(conn: sqlite3.Connection) -> dict[str, str]:
     return {r["key"]: r["value"] for r in _rows(conn.execute("SELECT key, value FROM app_settings"))}
+
+
+# --- event tagging -------------------------------------------------------------
+
+def retag_rows(conn: sqlite3.Connection, event_id: int | None, start: date, end: date, *, only_untagged: bool = True,
+               from_event_id: int | None = None) -> dict[str, int]:
+    """Tag (or untag) rows logged in [start, end]. Used when an event is started
+    after rows were logged, or ended earlier than today."""
+    cond = "health_event_id IS NULL" if only_untagged else "health_event_id = ?"
+    params_extra: tuple = () if only_untagged else (from_event_id,)
+    counts = {}
+    for table, col in (("weight_logs", "logged_on"), ("food_entries", "logged_on"), ("workouts", "performed_on"), ("daily_rollup", "day")):
+        cur = conn.execute(
+            f"UPDATE {table} SET health_event_id = ? WHERE user_id = ? AND {col} BETWEEN ? AND ? AND {cond}",
+            (event_id, USER_ID, start.isoformat(), end.isoformat(), *params_extra),
+        )
+        counts[table] = cur.rowcount
+    return counts
